@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Diese URL nach Veröffentlichung durch die finale GitHub-Repository-URL ersetzen.
-readonly REPOSITORY_URL="https://github.com/REPLACE_ME/homeESS.git"
+readonly REPOSITORY_URL="https://github.com/kleinVIEH/home-ess.git"
 
 readonly APP_NAME="home-ess"
 readonly APP_USER="homeess"
@@ -55,12 +54,6 @@ check_platform() {
 
   command -v systemctl >/dev/null 2>&1 || fail "systemd wird auf diesem System benötigt."
   command -v apt-get >/dev/null 2>&1 || fail "apt-get wurde nicht gefunden."
-}
-
-check_repository_url() {
-  if [[ ${REPOSITORY_URL} == *"REPLACE_ME"* ]]; then
-    fail "In install.sh muss zuerst REPOSITORY_URL auf die finale GitHub-URL gesetzt werden."
-  fi
 }
 
 check_installation_target() {
@@ -200,7 +193,6 @@ verify_installation() {
 main() {
   require_root
   check_platform
-  check_repository_url
   check_installation_target
   install_base_packages
   install_nodejs

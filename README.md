@@ -81,12 +81,10 @@ statischen HTML-Seiten.
 
 ### Automatische Installation (Debian/Ubuntu/Raspberry Pi OS)
 
-Nach dem Hinterlegen der finalen GitHub-URL in `REPOSITORY_URL` in
-`install.sh` lässt sich homeESS auf einem frischen System mit einem Befehl
-installieren:
+homeESS lässt sich auf einem frischen System mit einem Befehl installieren:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/OWNER/REPOSITORY/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/kleinVIEH/home-ess/main/install.sh | sudo bash
 ```
 
 Das Skript installiert die System- und Node.js-Abhängigkeiten, klont homeESS

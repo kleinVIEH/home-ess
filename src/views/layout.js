@@ -1,0 +1,167 @@
+'use strict';
+
+const { escapeHtml } = require('./components');
+const { getEnabledNavItems } = require('../modules');
+
+// Gemeinsame App-Hülle (Header + Sidebar) für alle authentifizierten Seiten.
+// Kernseiten stehen fest; optionale Module fügen sich über getEnabledNavItems()
+// dynamisch in die Hauptnavigation ein.
+const NAV_CORE = [
+  { path: '/dashboard', label: 'Dashboard', section: 'main' },
+  { path: '/stromverbrauch', label: 'Stromverbrauch', section: 'main' },
+  { path: '/photovoltaik', label: 'Photovoltaik', section: 'main' },
+  { path: '/batterie', label: 'Batterie', section: 'main' },
+  { path: '/output', label: 'Output', section: 'main' },
+  { path: '/module', label: 'Module', section: 'footer' },
+  { path: '/settings', label: 'Einstellungen', section: 'footer' },
+];
+
+// NAV wird von außen noch als Array erwartet (z. B. in Tests) — exportieren wir
+// die Kern-Liste unter dem alten Namen.
+const NAV = NAV_CORE;
+
+function renderNavLinks(section, activePath) {
+  const extra = section === 'main' ? getEnabledNavItems() : [];
+  return [...NAV_CORE.filter((item) => item.section === section), ...extra]
+    .map((item) => {
+      const active = item.path === activePath ? ' class="active"' : '';
+      return `<a href="${item.path}"${active}>${escapeHtml(item.label)}</a>`;
+    })
+    .join('\n          ');
+}
+
+function renderLiveScript() {
+  return `  <script>
+    (function () {
+      var source = null;
+      var refreshTimer = null;
+
+      function applyHeaderData(data) {
+        if (!data) return;
+        var temperatureNode = document.getElementById('header-temperature');
+        var timeNode = document.getElementById('header-time');
+        var dateNode = document.getElementById('header-date');
+        if (temperatureNode && data.temperature) temperatureNode.textContent = data.temperature.display;
+        if (timeNode && data.time) timeNode.textContent = data.time.display;
+        if (dateNode && data.date) dateNode.textContent = data.date.display;
+        var batNode  = document.getElementById('header-battery');
+        var batFill  = document.getElementById('bat-fill');
+        var batPct   = document.getElementById('bat-pct');
+        if (batNode && data.batterySoc != null) {
+          var pct = Math.min(100, Math.max(0, data.batterySoc));
+          batFill.style.width = pct.toFixed(0) + '%';
+          batFill.style.background = pct < 20 ? '#e74c3c' : pct < 50 ? '#d4a500' : '#2ecc71';
+          batPct.textContent = pct.toFixed(0) + ' %';
+          batNode.classList.add('bat-visible');
+        }
+
+        var skyNode = document.getElementById('header-sky');
+        if (skyNode && data.sky) {
+          if (data.sky === 'sun') {
+            skyNode.textContent = '☀️';
+            skyNode.title = 'Direkte Sonneneinstrahlung an mindestens einer PV-Anlage';
+          } else if (data.sky === 'cloud') {
+            skyNode.textContent = '☁️';
+            skyNode.title = 'Tagsüber, keine direkte Sonneneinstrahlung';
+          } else {
+            skyNode.textContent = '🌙';
+            skyNode.title = 'Nacht';
+          }
+        }
+      }
+
+      function refreshHeaderData() {
+        fetch('/live/header', { headers: { Accept: 'application/json' } })
+          .then(function (response) { return response.ok ? response.json() : null; })
+          .then(function (data) {
+            if (data) applyHeaderData(data);
+          })
+          .catch(function () {});
+      }
+
+      function queueHeaderRefresh() {
+        if (refreshTimer) return;
+        refreshTimer = window.setTimeout(function () {
+          refreshTimer = null;
+          refreshHeaderData();
+        }, 50);
+      }
+
+      refreshHeaderData();
+      if (!window.EventSource) return;
+      source = new EventSource('/live/events');
+      source.addEventListener('mqtt', function (event) {
+        var detail = {};
+        try {
+          detail = JSON.parse(event.data || '{}');
+        } catch (_) {
+          detail = {};
+        }
+        queueHeaderRefresh();
+        window.dispatchEvent(new CustomEvent('homeess:mqtt', { detail: detail }));
+      });
+      window.addEventListener('beforeunload', function () {
+        if (source) source.close();
+      });
+    })();
+  </script>`;
+}
+
+// renderLayout({ title, activePath, body, script })
+function renderLayout({ title, activePath = '', body = '', script = '' } = {}) {
+  return `<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(title || 'homeESS')}</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body class="page-dashboard">
+  <div class="app-shell">
+    <header class="dashboard-header">
+      <img src="/homeESS.png" alt="homeESS" class="header-logo">
+      <div class="header-statusbar" aria-label="Umgebungswerte">
+        <span class="header-status-pill">
+          <strong>Aussen</strong>
+          <span id="header-temperature">-- °C</span>
+        </span>
+        <span class="header-status-pill">
+          <strong>Zeit</strong>
+          <span id="header-time">--:--</span>
+        </span>
+        <span class="header-status-pill">
+          <strong>Datum</strong>
+          <span id="header-date">--.--.----</span>
+        </span>
+        <span class="header-battery" id="header-battery" title="Batterie Ladezustand">
+          <span class="bat-body"><span class="bat-fill" id="bat-fill"></span></span><span class="bat-cap"></span>
+          <span class="bat-pct" id="bat-pct"></span>
+        </span>
+        <span class="header-sky" id="header-sky" title="Himmelszustand">🌙</span>
+      </div>
+    </header>
+
+    <div class="app-body">
+      <aside class="sidebar">
+        <div class="sidebar-nav">
+          ${renderNavLinks('main', activePath)}
+        </div>
+        <div class="sidebar-footer">
+          ${renderNavLinks('footer', activePath)}
+          <button class="logout-button" onclick="window.location.href='/logout'">Abmelden</button>
+        </div>
+      </aside>
+
+      <main class="main-content">
+${body}
+      </main>
+    </div>
+  </div>
+${renderLiveScript()}
+${script ? `  <script>\n${script}\n  </script>` : ''}
+</body>
+</html>`;
+}
+
+module.exports = { renderLayout, NAV };

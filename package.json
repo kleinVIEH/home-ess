@@ -1,0 +1,25 @@
+{
+  "name": "home-ess",
+  "version": "0.4.0",
+  "description": "homeESS – Energy Storage System: abonniert MQTT-Topics und schaltet daraus Lasten.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "ess",
+    "energy-storage",
+    "mqtt",
+    "iobroker",
+    "home-automation"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^5.2.1",
+    "mqtt": "^5.15.1",
+    "sqlite3": "^6.0.1"
+  }
+}

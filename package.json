@@ -16,7 +16,7 @@
     "home-automation"
   ],
   "author": "",
-  "license": "ISC",
+  "license": "AGPL-3.0-only",
   "dependencies": {
     "express": "^5.2.1",
     "mqtt": "^5.15.1",

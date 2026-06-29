@@ -3,10 +3,11 @@
 // Katalog der auswählbaren internen Werte für Outputs. Angeboten werden die von
 // home-ess BERECHNETEN Werte (Leistungen, Erträge, Summen, direkte Sonne) – nicht
 // die Roh-Inputs aus dem ioBroker. Jeder Eintrag liefert:
-//   id      – stabiler Schlüssel
-//   label   – Anzeigename (alphabetisch sortiert)
-//   value   – Roh-Wert zum Publizieren (Zahl/Boolean) oder null
-//   display – formatierte Anzeige für die Oberfläche
+//   id       – stabiler Schlüssel
+//   label    – Anzeigename (alphabetisch sortiert)
+//   value    – Roh-Wert zum Publizieren (Zahl/Boolean) oder null
+//   display  – formatierte Anzeige für die Oberfläche
+//   category – Herkunft des Wertes (Seite), abgeleitet aus dem id-Präfix
 
 const { listPvPlants } = require('../photovoltaik/plants');
 const { readPhotovoltaikValues } = require('../photovoltaik/aggregation');
@@ -25,6 +26,38 @@ const operatingState = require('../operating-state');
 const { loadPrognosisConfig } = require('../prognosis/config');
 const { buildConsumptionModel, simulateDays } = require('../prognosis/forecast');
 const { getBehaviorRecommendation } = require('../prognosis/behavior');
+
+// Kategorien entsprechen der Herkunft des Wertes (Seite, von der er stammt) und
+// werden anhand des stabilen id-Präfix zugeordnet. Die Reihenfolge bestimmt die
+// Anzeige im Wertekatalog.
+const VALUE_CATEGORIES = [
+  'Photovoltaik',
+  'Stromverbrauch',
+  'Batterie',
+  'Prognose',
+  'Netzsteuerung',
+  'Pool',
+  'Betrieb',
+  'Sonstiges',
+];
+
+const CATEGORY_BY_PREFIX = [
+  ['pv.', 'Photovoltaik'],
+  ['sun.', 'Photovoltaik'],
+  ['strom.', 'Stromverbrauch'],
+  ['batterie.', 'Batterie'],
+  ['prognose.', 'Prognose'],
+  ['grid.', 'Netzsteuerung'],
+  ['pool.', 'Pool'],
+  ['operating.', 'Betrieb'],
+];
+
+function categoryForId(id) {
+  for (const [prefix, name] of CATEGORY_BY_PREFIX) {
+    if (String(id).startsWith(prefix)) return name;
+  }
+  return 'Sonstiges';
+}
 
 function roundTo(value, decimals) {
   const factor = 10 ** decimals;
@@ -162,6 +195,7 @@ async function listInternalValues(db, cache) {
   // Globaler Tagesstatus: bleibt nach einer Mindest-SoC-Netzschaltung bis zum
   // nächsten Tageswechsel auf false.
   entries.push(boolEntry('operating.autark', 'Autark', operatingState.getState().autark));
+  entries.push(boolEntry('operating.notstrom', 'Notstrombetrieb', operatingState.getState().emergencyMode));
   entries.push(numberEntry('prognose.autarkeTageJahr', 'Prognose autarke Tage im Jahr', operatingState.getState().autarkDaysCount));
   entries.push(numberEntry(
     'prognose.autarkeTageVorjahr',
@@ -406,8 +440,9 @@ async function listInternalValues(db, cache) {
     entries.push(boolEntry('grid.actual', 'Grid actual', grid.gridActual));
   }
 
+  for (const entry of entries) entry.category = categoryForId(entry.id);
   entries.sort((a, b) => a.label.localeCompare(b.label, 'de'));
   return entries;
 }
 
-module.exports = { listInternalValues };
+module.exports = { listInternalValues, categoryForId, VALUE_CATEGORIES };

@@ -976,52 +976,240 @@ h2 .cmd-confirm { font-size: 13px; vertical-align: middle; }
     line-height: 1;
 }
 
+/* Output- und Wertekatalog-Liste: dichte, tabellenartige Zeilen in einem
+   Viewport mit Eigen-Scroll, damit Ein-/Ausklappen das Layout nicht verschiebt. */
+.output-cats {
+    margin-top: 8px;
+    height: 60vh;
+    overflow-y: auto;
+    border: 1px solid #e2e6ea;
+    border-radius: 8px;
+    background: #fff;
+}
+
 .output-list {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    margin-top: 8px;
 }
 
+/* Feste Spalten: der Ist-Wert bleibt ortsfest, egal wie breit die
+   Status-Meldung rechts gerade ist. */
 .output-row {
-    display: flex;
+    display: grid;
+    grid-template-columns: minmax(150px, max-content) minmax(0, 1fr) 96px 170px auto;
     align-items: center;
-    gap: 12px;
-    padding: 6px 12px;
+    gap: 10px;
+    padding: 0 12px;
+    min-height: 28px;
     background: #fff;
-    border: 1px solid #e2e6ea;
-    border-radius: 6px;
+    border: none;
+    border-top: 1px solid #eef1f4;
+    font-size: 12px;
+    line-height: 1.4;
 }
 
 .output-row-label {
     font-weight: 600;
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .output-row-topic {
-    flex: 1;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 13px;
+    font-size: 12px;
 }
 
 .output-row-value {
     font-weight: 700;
     color: #e67e22;
     white-space: nowrap;
+    text-align: right;
+}
+
+.output-row .cmd-confirm {
+    align-self: center;
+    margin-left: 0;
+    justify-self: start;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
 }
 
 .output-row-actions {
     display: flex;
-    gap: 6px;
+    gap: 4px;
     flex-shrink: 0;
+    justify-self: end;
 }
 
 .output-row-actions .secondary-button {
-    padding: 4px 10px;
+    padding: 1px 8px;
+    font-size: 11px;
+    border-radius: 5px;
+}
+
+.output-row-actions .icon-button {
+    width: 24px;
+    height: 22px;
+    font-size: 12px;
+    border-radius: 5px;
+}
+
+/* Wertekatalog – kompakte, einklappbare Liste (zentrale Routine) */
+.value-catalog {
+    gap: 8px;
+}
+
+.value-catalog-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.value-catalog-search {
+    flex: 1;
+    min-width: 160px;
+    padding: 7px 12px;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    font-size: 14px;
+}
+
+.value-catalog-selected {
     font-size: 13px;
+    font-weight: 400;
+    color: #94a3b8;
+    white-space: nowrap;
+}
+
+.value-catalog-selected.has-value {
+    color: #0f172a;
+    font-weight: 600;
+}
+
+.value-catalog-cats {
+    display: flex;
+    flex-direction: column;
+    height: 300px;
+    overflow-y: auto;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    background: #fff;
+}
+
+/* Flache Abschnitte – keine verschachtelten Kästen, echte Listenoptik. */
+.value-cat {
+    background: #fff;
+}
+
+.value-cat-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 3px 10px;
+    min-height: 24px;
+    border: none;
+    border-top: 1px solid #e2e8f0;
+    background: #eef2f7;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 700;
+    color: #0f172a;
+    text-align: left;
+    line-height: 1.4;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+}
+
+.value-cat:first-child > .value-cat-head {
+    border-top: none;
+}
+
+.value-cat-head:hover {
+    background: #e2e8f0;
+}
+
+.value-cat-caret {
+    display: inline-block;
+    transition: transform 0.15s ease;
+    color: #64748b;
+    font-size: 11px;
+}
+
+.value-cat.is-open > .value-cat-head .value-cat-caret {
+    transform: rotate(90deg);
+}
+
+.value-cat-name {
+    flex: 1;
+}
+
+.value-cat-count {
+    margin-left: auto;
+    background: #dbe2ec;
+    color: #475569;
+    border-radius: 999px;
+    padding: 0 7px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.value-cat-body {
+    display: none;
+    flex-direction: column;
+}
+
+.value-cat.is-open > .value-cat-body {
+    display: flex;
+}
+
+.value-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    width: 100%;
+    padding: 0 12px 0 24px;
+    min-height: 26px;
+    border: none;
+    border-top: 1px solid #f1f5f9;
+    background: #fff;
+    cursor: pointer;
+    font-size: 12px;
+    line-height: 1.4;
+    text-align: left;
+}
+
+.value-row:hover {
+    background: #f8fafc;
+}
+
+.value-row.is-selected {
+    background: #dbeafe;
+}
+
+.value-row-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #1f2937;
+    font-weight: 500;
+}
+
+.value-row-now {
+    flex-shrink: 0;
+    color: #e67e22;
+    font-weight: 700;
+    white-space: nowrap;
 }
 
 /* Dashboard-Widgets & Gruppen */
@@ -1276,6 +1464,30 @@ h2 .cmd-confirm { font-size: 13px; vertical-align: middle; }
     .strom-layout,
     .topic-columns {
         grid-template-columns: 1fr;
+    }
+
+    /* Output-Zeilen auf schmalen Schirmen stapeln, Status separat darunter. */
+    .output-row {
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 4px 10px;
+    }
+
+    .output-row-topic {
+        grid-column: 1 / -1;
+    }
+
+    .output-row-value {
+        text-align: left;
+    }
+
+    .output-row .cmd-confirm {
+        grid-column: 1 / -1;
+        justify-self: start;
+    }
+
+    .output-row-actions {
+        grid-column: 1 / -1;
+        justify-self: start;
     }
 
     .plant-meta {
@@ -1728,7 +1940,6 @@ h2 .cmd-confirm { font-size: 13px; vertical-align: middle; }
 .forecast-behavior-form button:hover { background: #1d4ed8; }
 .forecast-behavior-status { display: flex; flex-direction: column; padding: 0 4px; font-size: 11px; color: #64748b; white-space: nowrap; }
 .forecast-behavior-status strong { color: #1f2937; font-size: 13px; }
-.forecast-behavior-reason { margin: -8px 0 18px; color: #64748b; font-size: 12px; text-align: right; }
 .forecast-hero {
     display: flex;
     align-items: center;
@@ -1796,7 +2007,6 @@ h2 .cmd-confirm { font-size: 13px; vertical-align: middle; }
     .forecast-page-head { flex-direction: column; }
     .forecast-behavior-form { width: 100%; flex-wrap: wrap; box-sizing: border-box; }
     .forecast-behavior-form select { flex: 1; min-width: 170px; }
-    .forecast-behavior-reason { margin-top: 8px; text-align: left; }
     .forecast-hero { align-items: flex-start; flex-wrap: wrap; }
     .forecast-hero-metrics { width: 100%; margin-left: 30px; justify-content: flex-start; }
     .forecast-hero-soc { text-align: left; }

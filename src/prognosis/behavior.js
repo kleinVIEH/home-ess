@@ -28,11 +28,16 @@ function forecastMetrics(prognosis) {
     today: days[0] || simulation.today || {},
     minimumReached: simulation.minimumReached || null,
     minimumBeforeCharge: !!simulation.minimumBeforeCharge,
+    assessmentSoc: number(
+      simulation.assessmentSoc,
+      simulation.nextChargeStart ? simulation.nextChargeStart.soc : (days[0] && days[0].batterySocEnd)
+    ),
+    gridBeforeCharge: number(simulation.gridBeforeCharge, 0),
   };
 }
 
 function gridParallelLevel(metrics, context) {
-  const { minSoc, currentSoc, minProjectedSoc, today } = metrics;
+  const { minSoc, currentSoc, assessmentSoc, gridBeforeCharge, today } = metrics;
   const fullThreshold = number(context.fullSocThreshold, 90);
   const hasExcess = number(today.balanceKwh, number(today.pvKwh) - number(today.loadKwh)) > 0.5 ||
     number(today.surplusKwh) >= 0.5;
@@ -42,11 +47,13 @@ function gridParallelLevel(metrics, context) {
   if (hasExcess && (currentSoc >= fullThreshold || number(today.batterySocEnd) >= fullThreshold)) {
     return { level: 5, reason: `Überschuss bei vollem Akku (Schwelle ${fullThreshold} %)` };
   }
-  if (metrics.minimumBeforeCharge || minProjectedSoc <= minSoc + 5) {
-    return { level: 2, reason: 'Mindeststand fast erreicht' };
+  // Netzparallel betrachtet bewusst nur das Fenster bis zum nächsten
+  // Ladebeginn. Risiken späterer Tage übernimmt bei Bedarf das verfügbare Netz.
+  if (metrics.minimumBeforeCharge || assessmentSoc <= minSoc + 5) {
+    return { level: 2, reason: 'Reserve bis zum nächsten Ladebeginn fast aufgebraucht' };
   }
-  if (minProjectedSoc <= minSoc + 20 || metrics.gridKwh > 0.05) {
-    return { level: 3, reason: 'Energiereserve könnte knapp werden' };
+  if (assessmentSoc <= minSoc + 20 || gridBeforeCharge > 0.05) {
+    return { level: 3, reason: 'Reserve bis zum nächsten Ladebeginn könnte knapp werden' };
   }
   if (currentSoc >= 80 || number(today.batterySocEnd) >= 80) {
     return { level: 4, reason: 'Hoher Akkustand ohne sicheren Überschuss' };
@@ -123,7 +130,32 @@ async function runNow(db) {
   return applyBehaviorLevel(db, prognosis);
 }
 
+let timer = null;
+let unsubscribe = null;
+let debounceTimer = null;
+let chain = Promise.resolve();
+
+function runSerialized(db) {
+  const run = chain.then(() => runNow(db));
+  chain = run.catch(() => {});
+  return run;
+}
+
+function scheduleRun(db) {
+  if (debounceTimer) return;
+  debounceTimer = setTimeout(() => {
+    debounceTimer = null;
+    runSerialized(db).catch(() => {});
+  }, 1500);
+}
+
+function init(db) {
+  if (!unsubscribe) unsubscribe = mqttClient.onValuesChanged(() => scheduleRun(db));
+  if (!timer) timer = setInterval(() => runSerialized(db).catch(() => {}), 30000);
+  return runSerialized(db);
+}
+
 module.exports = {
   evaluateBehaviorLevel, getBehaviorRecommendation, applyBehaviorLevel,
-  loadBehaviorContext, runNow, forecastMetrics,
+  loadBehaviorContext, runNow, init, forecastMetrics,
 };

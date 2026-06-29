@@ -14,6 +14,7 @@ function prognosis(model, { soc = 90, endSoc = 90, surplus = 0, batteryFull = fa
     battery: { soc },
     simulation: {
       minSoc: 20, soc, minimumReached: minimum, minimumBeforeCharge: !!minimum,
+      assessmentSoc: endSoc, gridBeforeCharge: 0,
       days: [
         { batterySocEnd: endSoc, surplusKwh: surplus, batteryFull, gridKwh: 0, pvKwh: pvToday, loadKwh: 8 },
         { batterySocEnd: futureEnd, surplusKwh: 0, batteryFull: false, gridKwh: 0, pvKwh: 6, loadKwh: 7 },
@@ -56,6 +57,17 @@ test('Netzparallelbetrieb liest die Voll-Schwelle aus aktivem Grid-Control', asy
 
 test('Netzparallelbetrieb senkt nahe Mindeststand auf Level 2', () => {
   assert.equal(evaluateBehaviorLevel(prognosis('grid_parallel', { soc: 30, endSoc: 24, futureEnd: 22 })).level, 2);
+});
+
+test('Netzparallelbetrieb ignoriert Risiken nach dem nächsten Ladebeginn', () => {
+  const data = prognosis('grid_parallel', { soc: 60, endSoc: 45, futureEnd: 20 });
+  data.simulation.assessmentSoc = 45;
+  assert.equal(evaluateBehaviorLevel(data).level, 3);
+});
+
+test('Netzparallelbetrieb setzt Level 1 erst unterhalb Mindest-SoC', () => {
+  assert.notEqual(evaluateBehaviorLevel(prognosis('grid_parallel', { soc: 20, endSoc: 20 })).level, 1);
+  assert.equal(evaluateBehaviorLevel(prognosis('grid_parallel', { soc: 19, endSoc: 19 })).level, 1);
 });
 
 test('Autarkbetrieb reagiert auf mehrtägige Risiken früher', () => {

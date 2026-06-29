@@ -3,7 +3,7 @@
 Alle nennenswerten Änderungen an homeESS. Format angelehnt an
 [Keep a Changelog](https://keepachangelog.com/de/1.1.0/).
 
-## [Unveröffentlicht]
+## [0.7.1] — 2026-06-29
 
 ### Hinzugefügt
 
@@ -54,6 +54,9 @@ Alle nennenswerten Änderungen an homeESS. Format angelehnt an
   Empty, Full, Good, HalfCharged, High, Overflow und Reserve sowie deren
   dynamische SoC-Schwellen ergänzt. „Charged today“ bleibt nach SoC > 98 % bis
   zum lokalen Tageswechsel gesetzt.
+- Wertekatalog um `operating.notstrom` („Notstrombetrieb“) in der Kategorie
+  **Betrieb** ergänzt. Der Ja/Nein-Wert spiegelt den Notstromzustand
+  (`emergencyMode`) und steht damit für Outputs und Dashboard-Widgets bereit.
 
 - Optionales Modul **Grid-Control** mit ioBroker-konformer MQTT-Steuerung für
   Netz und Überschusseinspeisung. SoC und Spannung besitzen jeweils getrennte
@@ -100,6 +103,15 @@ Alle nennenswerten Änderungen an homeESS. Format angelehnt an
   fehlender oder abweichender Bestätigung, Retry-Begrenzung und sichtbarer Status
   je Output. Nicht rücklesbare Command-Topics werden nicht mehr als sichere
   Output-Ziele akzeptiert.
+- Betriebslevel-Horizonte getrennt: Netzparallel bewertet nur bis zum nächsten
+  Ladebeginn und setzt Level 1 ausschließlich bei tatsächlich unterschrittenem
+  Mindest-SoC. Autarkbetrieb bleibt mehrtägig und darf Level 1 vorbeugend setzen,
+  um Netzbezug möglichst vollständig zu vermeiden.
+- Verhaltensmodell setzt den globalen Betriebslevel nun über eine eigenständige
+  Regelung bei MQTT-Änderungen und spätestens alle 30 Sekunden; es hängt nicht
+  mehr vom erfolgreichen Verbrauchssampling ab. Die unverbindliche
+  Empfehlungszeile wurde entfernt und die Aktivierungsansicht zeigt sofort den
+  tatsächlich gespeicherten Level.
 
 - **PV-Selbstkalibrierung** wirkt jetzt in **beide Richtungen** (`FACTOR_MAX`
   1,15 → 1,5; `RATIO_MAX` 1,3 → 1,5). Nicht kalibrierte Randzeiten (morgens/abends)
@@ -114,6 +126,20 @@ Alle nennenswerten Änderungen an homeESS. Format angelehnt an
   Slash-Wildcard hilft nur beim **Lesen**.
 - Werte optionaler Module (Pool, Grid-Control) erscheinen im **Wertekatalog**
   und in den **MQTT-Abos** nur noch, wenn das jeweilige Modul aktiviert ist.
+- **Wertekatalog** als zentrale, wiederverwendbare Routine
+  (`views/value-catalog.js`) neu aufgebaut: statt eines langen Dropdowns eine
+  kompakte, durchsuchbare Liste mit nach **Herkunft** geordneten, einklappbaren
+  Kategorien (Photovoltaik, Stromverbrauch, Batterie, Prognose, Netzsteuerung,
+  Pool, Betrieb) samt aktuellem Ist-Wert je Zeile. Die Auswahl landet in einem
+  versteckten Feld, sodass sich das Bauteil unverändert in Formulare einfügt. Es
+  ist jetzt direkt im **Output-Dialog** (unter dem Ziel-Topic) und im
+  **Dashboard-Dialog „Widget hinzufügen“** (unter der Gruppenauswahl) eingebettet.
+- **Output-Seite** zeigt angelegte Outputs ebenfalls als dichte, nach Kategorien
+  gruppierte und einklappbare Liste. Feste Spaltenbreiten sorgen dafür, dass eine
+  Statusänderung rechts den Ist-Wert nicht mehr verschiebt.
+- Katalog- und Output-Liste verwenden schmale, tabellenartige Zeilen in einem
+  Viewport mit Eigen-Scroll (sticky Kategorie-Köpfe), damit das Ein- und
+  Ausklappen das übrige Layout nicht mehr verschiebt.
 
 ### Behoben
 

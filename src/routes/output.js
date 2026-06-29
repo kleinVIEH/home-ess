@@ -20,6 +20,7 @@ function enrichOutputs(outputs, valuesById) {
     return {
       ...output,
       label: entry ? entry.label : output.sourceId,
+      category: entry ? entry.category : 'Sonstiges',
       currentDisplay: entry ? entry.display : '—',
       verification: outputEngine.getStatus(output.id),
     };
@@ -41,7 +42,12 @@ async function renderPage(db, res, options = {}) {
   res.send(
     renderOutput({
       outputs: enriched,
-      internalValues: internalValues.map((entry) => ({ id: entry.id, label: entry.label })),
+      internalValues: internalValues.map((entry) => ({
+        id: entry.id,
+        label: entry.label,
+        display: entry.display,
+        category: entry.category,
+      })),
       formMessage: options.formMessage || '',
       formError: options.formError || '',
       dialogMode: options.dialogMode || '',

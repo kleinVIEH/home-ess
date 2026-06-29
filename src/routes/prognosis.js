@@ -5,14 +5,13 @@ const { requireAuth } = require('../auth/session');
 const mqttClient = require('../mqtt/client');
 const { computePrognosis } = require('../prognosis/forecast');
 const { savePrognosisConfig, activateBehaviorModel } = require('../prognosis/config');
-const { getBehaviorRecommendation, applyBehaviorLevel } = require('../prognosis/behavior');
+const { applyBehaviorLevel } = require('../prognosis/behavior');
 const { loadAllStateDefinitions } = require('../mqtt/state-definitions');
 const operatingState = require('../operating-state');
 const renderPrognosis = require('../views/prognosis');
 
 async function renderPage(db, res, options = {}) {
   const prognosis = await computePrognosis(db, mqttClient.getCache(), { allowFetch: false });
-  prognosis.behaviorRecommendation = await getBehaviorRecommendation(db, prognosis);
   res.send(renderPrognosis({ prognosis, ...options }));
 }
 
@@ -26,7 +25,6 @@ function prognosisRoutes(db) {
   router.get('/prognose/data', requireAuth, async (req, res, next) => {
     try {
       const prognosis = await computePrognosis(db, mqttClient.getCache(), { allowFetch: true });
-      prognosis.behaviorRecommendation = await getBehaviorRecommendation(db, prognosis);
       res.json(prognosis);
     } catch (err) { next(err); }
   });
@@ -35,11 +33,16 @@ function prognosisRoutes(db) {
     try {
       const behavior = await activateBehaviorModel(db, req.body.behaviorModel);
       const prognosis = await computePrognosis(db, mqttClient.getCache(), { allowFetch: false });
-      const recommendation = await applyBehaviorLevel(db, prognosis) || await getBehaviorRecommendation(db, prognosis);
-      prognosis.behaviorRecommendation = recommendation;
+      const applied = await applyBehaviorLevel(db, prognosis);
+      // computePrognosis enthält den Betriebszustand vom Beginn der Berechnung.
+      // Nach dem Setzen muss die Antwort den wirklich aktivierten Level zeigen.
+      prognosis.operating = operatingState.getState();
+      const result = applied
+        ? ` · Level ${applied.level}: ${applied.reason}.`
+        : ' · Regelung wartet auf eine vollständige Prognose.';
       res.send(renderPrognosis({
         prognosis,
-        message: `${behavior.behaviorModel === 'off_grid' ? 'Autarkbetrieb' : 'Netzparallelbetrieb'} aktiviert · Level ${recommendation.level}: ${recommendation.reason}.`,
+        message: `${behavior.behaviorModel === 'off_grid' ? 'Autarkbetrieb' : 'Netzparallelbetrieb'} aktiviert${result}`,
       }));
     } catch (err) { next(err); }
   });

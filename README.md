@@ -13,7 +13,8 @@ Bedienung über ein Web-Dashboard mit vorgeschaltetem Login.
 - 🖥️ **Dashboard** — frei konfigurierbare **Widgets** (jeder berechnete Wert als
   Live-Kachel), **Gruppen** mit Titel und Breite (voll/halb/viertel),
   Anordnung per **Drag & Drop** (Widgets und Gruppen); Widgets per Drag in
-  Gruppen verschiebbar, Widgets/Gruppen bearbeit- und löschbar.
+  Gruppen verschiebbar, Widgets/Gruppen bearbeit- und löschbar. Die Wertauswahl
+  erfolgt über den zentralen **Wertekatalog** (siehe Output).
 - ⚡ **Stromverbrauch** — KPI-Kacheln: Eigenverbrauch, Netzbezug, Heute,
   Woche, Jahr (inkl. Vorjahr), konfigurierbare MQTT-Topics je Phase sowie
   Tagesstart-Abgleich für Woche/Jahr.
@@ -66,13 +67,18 @@ Bedienung über ein Web-Dashboard mit vorgeschaltetem Login.
   Netzbezug und PV abgeleitete Gesamtverbrauch auch Akkuladung enthält, wird die
   signierte Batterieleistung vor dem Lernen herausgerechnet.
   Oben rechts lässt sich ein Verhaltensmodell aktivieren: **Netzparallelbetrieb**
-  nutzt das Netz als Reserve; **Autarkbetrieb** bewertet mehrere Prognosetage
-  und reduziert Verbraucher deutlich früher. Die Prognose verwaltet alle
-  Betriebslevel 1–5; Level 1 greift bei unterschrittenem Mindest-SoC auch ohne
+  bewertet ausschließlich die Versorgung bis zum nächsten Ladebeginn und nutzt
+  danach das Netz als Reserve; **Autarkbetrieb** bewertet mehrere Prognosetage
+  und reduziert Verbraucher deutlich früher bis hin zu vorbeugendem Level 1.
+  Die Prognose verwaltet alle
+  Betriebslevel 1–5; im Netzparallelbetrieb greift Level 1 erst bei tatsächlich
+  unterschrittenem Mindest-SoC und auch ohne
   aktiviertes Verhaltensmodell. Im Autarkbetrieb gilt der Akku erst über 98 %
   als voll und Überschuss aktiviert dann Level 5. Im Netzparallelbetrieb stammt
   die Voll-Schwelle aus der oberen Grid-Control-SoC-Schwelle, bei deaktiviertem
-  Grid-Control werden 90 % verwendet.
+  Grid-Control werden 90 % verwendet. Das aktivierte Modell setzt den globalen
+  Betriebslevel direkt, wird bei MQTT-Änderungen neu bewertet und spätestens
+  alle 30 Sekunden unabhängig vom Verbrauchssampling ausgeführt.
 - 🔌 **Grid-Control** (optionales Modul): schaltet Netz und optional
   Überschusseinspeisung nach getrennten unteren/oberen SoC- und
   Spannungsfenstern mit kleiner lokaler Hysterese sowie nach einer
@@ -110,7 +116,11 @@ Bedienung über ein Web-Dashboard mit vorgeschaltetem Login.
 - 📤 **Output** — beliebige berechnete Werte an ioBroker-Ziel-Topics zurückgeben;
   geschlossene Regelschleife mit aktivem Readback alle 30 Sekunden. Fehlende oder
   abweichende Bestätigungen werden erneut geschrieben und je Output angezeigt.
-  Nicht rücklesbare Command-Topics sind als Ziel bewusst ausgeschlossen.
+  Nicht rücklesbare Command-Topics sind als Ziel bewusst ausgeschlossen. Werte
+  werden über den zentralen **Wertekatalog** gewählt — eine durchsuchbare,
+  nach Herkunft (Photovoltaik, Stromverbrauch, Batterie, Prognose, …) geordnete
+  und einklappbare Liste mit Ist-Werten; angelegte Outputs erscheinen ebenso als
+  dichte, kategorisierte Liste.
 - 🧩 **Module** — Verwaltungsseite zum Aktivieren/Deaktivieren optionaler Module;
   aktive Module erscheinen automatisch in der Sidebar.
 - 🌤️ **Sonnenintensität** (% des Clear-Sky-Ideals, auf 100 % gedeckelt):
@@ -206,7 +216,9 @@ src/
                    Output-CRUD, Publish-Engine
   dashboard/       Widget- und Gruppen-CRUD
   routes/          Eine Datei je Seite/Feature
-  views/           Dynamische HTML-Renderer (je Seite eine Datei)
+  views/           Dynamische HTML-Renderer (je Seite eine Datei),
+                   value-catalog.js = zentrale Wertekatalog-Routine
+                   (Output- und Dashboard-Dialoge)
 public/styles.css  Statisches Asset (CSS)
 ```
 

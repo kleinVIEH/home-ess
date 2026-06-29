@@ -145,10 +145,13 @@ vorgeschaltetem Login.
   Wochentagsprofile samt wochentagsabhängigem Tagesniveau; bei wenig Daten wird
   zum globalen beziehungsweise Standard-Haushaltsprofil zurückgeblendet.
   Persistente Verhaltensmodelle (`prognosis_config.behavior_model/_active`):
-  `grid_parallel` ordnet Prognosezustände mit spätem Abregeln und Netz als Backup
-  zu; `off_grid` bewertet Mindest-SoC und Energiebilanz aller sichtbaren Tage und
-  kann vorausschauend auch Level 1 setzen. `prognosis/behavior.js` läuft nach dem
-  60-s-Verbrauchssampling sowie unmittelbar beim Aktivieren und besitzt exklusiv
+  `grid_parallel` bewertet ausschließlich Reserve und Netzbedarf bis zum nächsten
+  Ladebeginn; spätere Tage sind wegen des verfügbaren Netzes irrelevant und
+  Level 1 ist bis zur tatsächlichen Mindest-SoC-Unterschreitung gesperrt.
+  `off_grid` bewertet dagegen Mindest-SoC und Energiebilanz aller sichtbaren Tage
+  und kann vorausschauend auch Level 1 setzen. `prognosis/behavior.js` läuft als
+  eigenständige, serialisierte Regelung bei MQTT-Änderungen, spätestens alle
+  30 Sekunden sowie unmittelbar beim Aktivieren und besitzt exklusiv
   alle Level 1–5. Unter Mindest-SoC setzt es Level 1 auch bei deaktiviertem
   Verhaltensmodell. Im Autarkbetrieb erfordert Level 5 SoC > 98 % plus Überschuss;
   im Netzparallelbetrieb gilt die obere Grid-Control-SoC-Schwelle als voll, bei
@@ -185,7 +188,10 @@ vorgeschaltetem Login.
   Bestätigung. Bei fehlendem oder abweichendem Istwert wird rate-limitiert erneut
   publiziert; `ack:false`-Schreib-Echos zählen nicht. Die Seite zeigt je Output
   den Bestätigungsstatus. Command-Topics sind ausgeschlossen, weil sie keinen
-  verifizierbaren Istwert bereitstellen.
+  verifizierbaren Istwert bereitstellen. Angelegte Outputs erscheinen als dichte,
+  nach Kategorie gruppierte und einklappbare Liste mit festen Spaltenbreiten
+  (Statuswechsel verschiebt den Ist-Wert nicht). Die Wertauswahl im Dialog
+  nutzt den zentralen Wertekatalog (`views/value-catalog.js`).
 - **Optionale Module** (`src/modules/index.js`): generische Registry +
   In-Memory-Enabled-State; Seite `/module` zum Aktivieren/Deaktivieren.
   Aktivierte Module erscheinen automatisch in der Sidebar. Aktuell:
@@ -212,8 +218,13 @@ vorgeschaltetem Login.
   **PV-Prognose** (erwarteter Tagesertrag heute/morgen/+2/+3 sowie heute bisher /
   heute noch erwartet), **Systemprognose** (`prognose.*`) **sowie Batterie-Werte** (SoC, Leistung, Spannung,
   Temperatur) und **Pool-Werte** (Wassertemperatur, Pumpen-Status, pH, Chlor — nur
-  wenn Modul aktiv). Die Kalibrierfaktoren sind bewusst **nicht** im Katalog (reine
-  Diagnose). Alle Einträge haben `id`, `label`, `value`, `display`.
+  wenn Modul aktiv) sowie **Betrieb** (`operating.*`, u. a. Autark und
+  `operating.notstrom` = Notstrombetrieb). Die Kalibrierfaktoren sind bewusst
+  **nicht** im Katalog (reine Diagnose). Alle Einträge haben `id`, `label`,
+  `value`, `display` und `category` (Herkunft, abgeleitet aus dem id-Präfix; siehe
+  `categoryForId`/`VALUE_CATEGORIES`). Die Darstellung übernimmt die zentrale,
+  wiederverwendbare Routine `views/value-catalog.js` (durchsuchbare, einklappbare
+  Liste mit Ist-Werten) — eingebettet in Output- und Dashboard-Dialoge.
 - Einstellungen (Karten-Layout): Passwort ändern, **Standort & Zeit**
   (Breiten-/Längengrad, Zeitzone, automatische Zeitumstellung — Eingangsgrößen
   fürs Clear-Sky-Modell), MQTT-Broker konfigurieren + Verbindung testen.
@@ -311,13 +322,14 @@ src/
                           + GET /grid-control/status + GET /grid-control/log
   views/
     components.js         escapeHtml, statusText
+    value-catalog.js      Zentrale Wertekatalog-Routine (Liste + Client-Script)
     layout.js             App-Hülle + Nav + Header-Live-Script (inkl. Batterie-Icon)
     login.js              Login-Seite
     dashboard.js          Dashboard: Widgets/Gruppen, Drag&Drop, Dialoge
     stromverbrauch.js     Stromverbrauch — KPI-Kacheln + Config
     photovoltaik.js       Photovoltaik — Anlagenliste
     batterie.js           Batterie — KPI-Kacheln + SoC-Balken + Config
-    output.js             Output — Zeilenliste
+    output.js             Output — kategorisierte, einklappbare Zeilenliste
     settings.js           Einstellungen
     modules.js            Modul-Verwaltung
     pool.js               Pool — KPI-Kacheln + Pumpen-Buttons + Config

@@ -81,8 +81,6 @@ function renderPrognosis({ prognosis, message = '', error = '' } = {}) {
   const coolingText = coolingModel.enabled
     ? `${coolingModel.sampleCount} Hitzetage · ${Number(coolingModel.kwhPerDegree).toFixed(2).replace('.', ',')} kWh/°C`
     : `lernt noch · ${coolingModel.sampleCount || 0}/2 Hitzetage`;
-  const behaviorRecommendation = prognosis.behaviorRecommendation || { level: operating.operatingLevel || 2, reason: '' };
-
   const body = `        <div class="forecast-page-head">
           <h1>Prognose</h1>
           <form action="/prognose/behavior" method="POST" class="forecast-behavior-form">
@@ -96,7 +94,6 @@ function renderPrognosis({ prognosis, message = '', error = '' } = {}) {
             <button type="submit">Aktivieren</button>
           </form>
         </div>
-        <p class="forecast-behavior-reason">Empfehlung: Level ${escapeHtml(behaviorRecommendation.level)} · ${escapeHtml(behaviorRecommendation.reason)}</p>
 
         ${message ? statusText(message, 'success') : ''}
         ${error ? statusText(error) : ''}

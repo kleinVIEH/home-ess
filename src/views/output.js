@@ -2,6 +2,8 @@
 
 const { renderLayout } = require('./layout');
 const { escapeHtml, statusText } = require('./components');
+const { renderValueCatalog, valueCatalogScript } = require('./value-catalog');
+const { VALUE_CATEGORIES } = require('../output/internal-values');
 
 function renderOutput({
   outputs = [],
@@ -31,7 +33,9 @@ function renderOutput({
         ${renderOutputDialog({ internalValues, dialogError, dialogValues, dialogMode, editingOutputId })}
         ${renderDeleteDialog()}`;
 
-  const script = `    const outputs = ${JSON.stringify(outputs.map(serializeOutputForClient))};
+  const script = `${valueCatalogScript()}
+
+    const outputs = ${JSON.stringify(outputs.map(serializeOutputForClient))};
     const initialDialogMode = ${JSON.stringify(dialogMode)};
     const initialEditingOutputId = ${editingOutputId == null ? 'null' : Number(editingOutputId)};
     const initialDialogValues = ${JSON.stringify(dialogValues || {})};
@@ -57,7 +61,7 @@ function renderOutput({
     }
 
     function setOutputFormValues(values) {
-      document.getElementById('outputSourceId').value = values.sourceId || '';
+      valueCatalogSync('outputSourceId', values.sourceId || '');
       document.getElementById('outputTargetTopic').value = values.targetTopic || '';
     }
 
@@ -120,11 +124,39 @@ function renderOutput({
 }
 
 function renderOutputList(outputs) {
-  const sorted = [...outputs].sort((a, b) =>
-    String(a.label || a.sourceId).localeCompare(String(b.label || b.sourceId), 'de')
-  );
-  return `<div class="output-list">
-${sorted.map(renderOutputRow).join('\n')}
+  const byCat = new Map();
+  for (const output of outputs) {
+    const cat = output.category || 'Sonstiges';
+    if (!byCat.has(cat)) byCat.set(cat, []);
+    byCat.get(cat).push(output);
+  }
+  const known = VALUE_CATEGORIES.filter((cat) => byCat.has(cat));
+  const extra = [...byCat.keys()].filter((cat) => !VALUE_CATEGORIES.includes(cat)).sort((a, b) => a.localeCompare(b, 'de'));
+  const order = [...known, ...extra];
+
+  const categories = order
+    .map((cat) => {
+      const items = byCat
+        .get(cat)
+        .slice()
+        .sort((a, b) => String(a.label || a.sourceId).localeCompare(String(b.label || b.sourceId), 'de'));
+      return `            <div class="value-cat is-open">
+              <button type="button" class="value-cat-head" aria-expanded="true" onclick="valueCatalogToggle(this)">
+                <span class="value-cat-caret" aria-hidden="true">▸</span>
+                <span class="value-cat-name">${escapeHtml(cat)}</span>
+                <span class="value-cat-count">${items.length}</span>
+              </button>
+              <div class="value-cat-body">
+                <div class="output-list">
+${items.map(renderOutputRow).join('\n')}
+                </div>
+              </div>
+            </div>`;
+    })
+    .join('\n');
+
+  return `<div class="output-cats">
+${categories}
           </div>`;
 }
 
@@ -166,25 +198,13 @@ function renderOutputDialog({ internalValues, dialogError, dialogValues, dialogM
             </div>
             ${statusText(dialogError)}
             <div class="dialog-grid">
-              <label class="field-block" for="outputSourceId">
-                <span>Interner Wert</span>
-                <select id="outputSourceId" name="sourceId" required>
-                  <option value="">Bitte waehlen</option>
-                  ${internalValues
-                    .map(
-                      (value) =>
-                        `<option value="${escapeHtml(value.id)}"${value.id === values.sourceId ? ' selected' : ''}>${escapeHtml(value.label)}</option>`
-                    )
-                    .join('')}
-                </select>
-                ${internalValues.length ? '' : '<small class="muted form-hint">Noch keine internen Werte verfuegbar. Bitte zuerst MQTT-Quellen konfigurieren.</small>'}
-              </label>
               <label class="field-block" for="outputTargetTopic">
                 <span>Ziel-Topic</span>
                 <input type="text" id="outputTargetTopic" name="targetTopic" value="${escapeHtml(values.targetTopic)}" placeholder="z.B. 0_userdata.0.homeess.SoC" required>
                 <small class="muted form-hint">Bestätigter State im ioBroker. Command-Topics sind nicht zulässig, weil sie keinen sicheren Istwert zurückmelden.</small>
               </label>
             </div>
+            ${renderValueCatalog({ values: internalValues, inputId: 'outputSourceId', name: 'sourceId', selectedId: values.sourceId, label: 'Interner Wert' })}
             <div class="button-row">
               <button type="submit">Speichern</button>
               <button type="button" class="secondary-button" onclick="closeOutputDialog()">Abbrechen</button>

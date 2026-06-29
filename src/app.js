@@ -67,8 +67,9 @@ function createApp() {
 
   // Optionale Module und globalen Betriebszustand laden – muss abgeschlossen sein bevor
   // loadAllStateDefinitions läuft, da isEnabled() sonst noch falsch zurückgibt.
-  initModules(db)
+  const modulesReady = initModules(db)
     .catch(() => {})
+  modulesReady
     .then(() => operatingReady)
     .then(() => loadAllStateDefinitions(db))
     .then((defs) => {
@@ -85,9 +86,15 @@ function createApp() {
 
   // Output-Engine: schreibt interne Werte bei Aenderung an ihre Ziel-Topics.
   outputEngine.init(db).catch(() => {});
-  operatingReady
-    .then(() => gridControlAutomation.init(db))
-    .catch(() => gridControlAutomation.init(db));
+  Promise.all([modulesReady, operatingReady])
+    .then(() => {
+      gridControlAutomation.init(db);
+      return prognosisBehavior.init(db);
+    })
+    .catch(() => {
+      gridControlAutomation.init(db);
+      prognosisBehavior.init(db).catch(() => {});
+    });
 
   const updateConsumption = () => {
     const cache = mqttClient.getCache();
@@ -96,7 +103,6 @@ function createApp() {
         batteryPower: readBatterieData(cache).power,
         outdoorTemperature: buildEnvironmentSnapshot(cache).temperature.value,
       }))
-      .then(() => prognosisBehavior.runNow(db))
       .catch(() => {});
   };
   updateConsumption();

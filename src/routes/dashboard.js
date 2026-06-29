@@ -49,7 +49,12 @@ async function renderPage(db, res, options = {}) {
       })),
       groupsForSelect: groups,
       groupWidths: GROUP_WIDTHS,
-      internalValues: internalValues.map((entry) => ({ id: entry.id, label: entry.label })),
+      internalValues: internalValues.map((entry) => ({
+        id: entry.id,
+        label: entry.label,
+        display: entry.display,
+        category: entry.category,
+      })),
       formMessage: options.formMessage || '',
       formError: options.formError || '',
       dialogMode: options.dialogMode || '',

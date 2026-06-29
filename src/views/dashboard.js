@@ -2,6 +2,7 @@
 
 const { renderLayout } = require('./layout');
 const { escapeHtml, statusText } = require('./components');
+const { renderValueCatalog, valueCatalogScript } = require('./value-catalog');
 
 // Dashboard mit frei konfigurierbaren Widgets und Gruppen. Widgets zeigen einen
 // internen Wert (gleicher Katalog wie die Outputs) als Live-Kachel und lassen
@@ -57,7 +58,9 @@ ${groups.map(renderGroup).join('\n')}
     groupId: widget.groupId == null ? '' : widget.groupId,
   }));
 
-  const script = `    var dashboardWidgets = ${JSON.stringify(clientWidgets)};
+  const script = `${valueCatalogScript()}
+
+    var dashboardWidgets = ${JSON.stringify(clientWidgets)};
     var initialDialogMode = ${JSON.stringify(dialogMode)};
     var initialEditingWidgetId = ${editingWidgetId == null ? 'null' : Number(editingWidgetId)};
     var initialDialogValues = ${JSON.stringify(dialogValues || {})};
@@ -90,7 +93,7 @@ ${groups.map(renderGroup).join('\n')}
     }
 
     function setWidgetFormValues(values) {
-      document.getElementById('widgetSourceId').value = values.sourceId || '';
+      valueCatalogSync('widgetSourceId', values.sourceId || '');
       document.getElementById('widgetGroupId').value = values.groupId == null ? '' : String(values.groupId);
     }
 
@@ -442,16 +445,7 @@ function renderWidgetDialog({ internalValues, groupsForSelect }) {
                 <p class="muted">Wert auswaehlen und optional einer Gruppe zuordnen.</p>
               </div>
             </div>
-            <div class="dialog-grid dialog-grid--two">
-              <label class="field-block" for="widgetSourceId">
-                <span>Wert</span>
-                <select id="widgetSourceId" name="sourceId" required>
-                  <option value="">Bitte waehlen</option>
-                  ${internalValues
-                    .map((value) => `<option value="${escapeHtml(value.id)}">${escapeHtml(value.label)}</option>`)
-                    .join('')}
-                </select>
-              </label>
+            <div class="dialog-grid">
               <label class="field-block" for="widgetGroupId">
                 <span>Gruppe</span>
                 <select id="widgetGroupId" name="groupId">
@@ -462,6 +456,7 @@ function renderWidgetDialog({ internalValues, groupsForSelect }) {
                 </select>
               </label>
             </div>
+            ${renderValueCatalog({ values: internalValues, inputId: 'widgetSourceId', name: 'sourceId', selectedId: '', label: 'Wert' })}
             <div class="button-row">
               <button type="submit">Speichern</button>
               <button type="button" class="secondary-button" onclick="closeWidgetDialog()">Abbrechen</button>

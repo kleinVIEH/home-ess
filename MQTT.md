@@ -139,6 +139,27 @@ function mqttSubscribeCandidates(configuredTopic) {
 
 **Wichtig:** Das Routing (welche eingehende Nachricht welchem Cache-Eintrag zugeordnet wird) weiterhin auf den exakten `mqttReadCandidates` aufbauen. Das Wildcard dient nur dem Empfang; die Zuordnung läuft über das genaue Topic der eingehenden Nachricht.
 
+### Schreiben auf Slash-State-IDs ist nicht möglich
+
+Das Wildcard löst ausschließlich das **Lesen**. **Schreiben** auf eine State-ID
+mit eingebettetem Slash funktioniert prinzipiell nicht:
+
+- Auf ein Wildcard (`#`/`+`) kann **nicht publiziert** werden — ein Publish geht
+  immer an genau ein konkretes Topic.
+- Der Broker bildet ein eingehendes konkretes Topic per `/`→`.` auf die State-ID
+  zurück. Aus `modbus/0/holdingRegisters/100/3500_/ManualStart` wird so
+  `modbus.0.holdingRegisters.100.3500_.ManualStart` — die echte ID enthält an
+  dieser Stelle aber einen **Slash**. Der Schreibbefehl trifft nichts und
+  versickert (selbst wenn man an alle Punkt-/Slash-Kandidaten schreibt).
+
+**Symptom:** Der Zustand wird korrekt angezeigt/gelesen, ein Schaltbefehl ändert
+den realen State im ioBroker aber nie.
+
+**Lösung:** Für **Schalt-Ziel-Topics slash-freie** State-IDs verwenden (z. B. einen
+schreibbaren Hilfs-State unter `0_userdata.0.…` anlegen und per Skript auf das
+slash-behaftete Register spiegeln). Nur Lese-Topics dürfen den eingebetteten
+Slash behalten.
+
 ---
 
 ## Reconnect – die häufigste Fehlerquelle
@@ -219,6 +240,38 @@ function unwrapMqttPayload(raw) {
 ```
 
 **Nur `val` auspacken.** Andere JSON-Objekte (z. B. `{"power": 123}`) bleiben als Rohstring.
+
+### `ack`-Flag: bestätigter Zustand vs. Schreibwunsch
+
+In ioBroker bedeutet `ack:true` den **bestätigten Ist-Zustand** eines States,
+`ack:false` einen **Schreibwunsch/Kommando**. Schreibt ein Client einen Wert auf
+das Haupt-Topic (`{val, ack:false}`, siehe unten), so empfängt er dieses
+**eigene Echo** über seine Subscription wieder zurück. Wird das ungeprüft gecacht,
+spiegelt der „Broker-Stand" nur den eigenen Befehl wider — eine Rückmeldungs-
+Verifikation (Soll == Broker?) meldet dann fälschlich „bestätigt", obwohl der
+Adapter/das Gerät den Wert gar nicht übernommen hat.
+
+**Regel:** Beim Readback das `ack`-Flag auswerten und Nachrichten mit `ack:false`
+**nicht** als Zustand cachen. Nur `ack:true` (bzw. JSON-lose Rohwerte von
+Adaptern, die Zustände ohne Wrapper publizieren) gelten als bestätigter Wert.
+
+```js
+function unwrapMqttMessage(raw) {
+  const text = String(raw);
+  if (!text || (text[0] !== "{" && text[0] !== "[")) return { value: text, ack: null };
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === "object" && "val" in parsed) {
+      return { value: parsed.val, ack: typeof parsed.ack === "boolean" ? parsed.ack : null };
+    }
+  } catch (_) {}
+  return { value: text, ack: null };
+}
+
+// Im Message-Handler:
+const { value, ack } = unwrapMqttMessage(payload);
+if (ack === false) return; // Schreibwunsch/Echo – kein bestätigter Zustand
+```
 
 ### Sinnlose Werte ignorieren
 
@@ -321,6 +374,18 @@ function requestTopicValue(configuredTopic) {
 ```
 
 **Wichtig:** Wildcard-Topics (`#`, `+`) niemals für `/get`-Requests verwenden. Nur exakte Kandidaten.
+
+### Verifizierte HomeESS-Outputs
+
+Die allgemeine Output-Engine behandelt ein erfolgreiches `publish()` nicht als
+Erfolg. Jeder Ziel-State wird zusätzlich abonniert und alle 30 Sekunden aktiv
+per `/get` abgefragt. Nur eine nach dieser Anfrage empfangene `ack:true`- oder
+Rohwert-Rückmeldung mit typgleich übereinstimmendem Wert bestätigt den Output.
+Fehlt sie oder weicht sie ab, wird der Sollwert mit mindestens zehn Sekunden
+Abstand erneut geschrieben. Eigene `ack:false`-Echos bleiben ausgeschlossen.
+
+Command-Topics (`_SET`, `.SET`, `/SET`) liefern üblicherweise keinen belastbaren
+Istwert und sind deshalb keine zulässigen Ziele für verifizierte Outputs.
 
 ---
 
@@ -456,6 +521,8 @@ async function fetchLiveValue(configuredTopic, timeoutMs = 3500) {
 | Command-Topic (`_SET`) sendet JSON-Body | `isCommandTopic` nicht geprüft | Command-Topics: nur Rohwert, kein `/set`, kein JSON |
 | Alte Events nach Client-Neuaufbau | `close`/`error`/`message` Events des alten Clients | Generation-Counter oder Client-Objekt-Vergleich |
 | Topics die stunden-/tagealt bleiben | Keine Watchdog-Logik für stille Subscriptions | `checkSilentSubscriptions` periodisch aufrufen |
+| Readback meldet fälschlich „bestätigt" | Eigenes `ack:false`-Echo auf dem Haupt-Topic wird als Zustand gecacht | `ack:false`-Nachrichten beim Readback verwerfen; nur `ack:true`/Rohwerte cachen |
+| Schaltbefehl ändert Slash-State nie | Schreiben auf State-ID mit eingebettetem Slash unmöglich (`/`→`.` trifft falsch) | Slash-freie Ziel-Topics verwenden; Wildcard hilft nur beim Lesen |
 
 ---
 

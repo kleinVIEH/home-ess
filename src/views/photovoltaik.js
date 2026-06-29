@@ -69,7 +69,8 @@ function renderPhotovoltaik({
         ${renderPlantDialog({ cellTypeOptions, converterTypeOptions, dialogError, dialogValues, dialogMode, editingPlantId })}
         ${renderOffsetDialog('week', 'Woche setzen', 'Wochenwert zum Tagesstart (kWh)', 'weekStartValue', '/photovoltaik/week-offset')}
         ${renderOffsetDialog('year', 'Jahr setzen', 'Jahreswert zum Tagesstart (kWh)', 'yearStartValue', '/photovoltaik/year-offset')}
-        ${renderDeleteDialog(plants)}`;
+        ${renderDeleteDialog(plants)}
+        ${renderClearCalibrationDialog()}`;
 
   const script = `    const pvPlants = ${JSON.stringify(plants.map(serializePlantForClient))};
     const cellTypeDefaultEfficiency = ${JSON.stringify(cellTypeDefaultEfficiency)};
@@ -82,12 +83,17 @@ function renderPhotovoltaik({
       if (!dialog) return;
       var form = document.getElementById('plantForm');
       var title = document.getElementById('plantDialogTitle');
+      var clearBtn = document.getElementById('clearCalibrationBtn');
       var plant = pvPlants.find(function (item) { return item.id === plantId; }) || null;
 
       if (mode === 'edit' && plant) {
         form.action = '/photovoltaik/plants/' + plant.id;
         title.textContent = 'PV-Anlage bearbeiten';
         setPlantFormValues(plant);
+        if (clearBtn) {
+          clearBtn.hidden = false;
+          clearBtn.onclick = function () { openClearCalibrationDialog(plant.id); };
+        }
       } else {
         form.action = '/photovoltaik/plants';
         title.textContent = 'PV-Anlage hinzufuegen';
@@ -106,6 +112,7 @@ function renderPhotovoltaik({
           powerTopic: '',
           todayYieldTopic: ''
         });
+        if (clearBtn) clearBtn.hidden = true;
       }
 
       if (typeof dialog.showModal === 'function') dialog.showModal();
@@ -153,6 +160,22 @@ function renderPhotovoltaik({
 
     function closeDeleteDialog() {
       var dialog = document.getElementById('deletePlantDialog');
+      if (dialog) dialog.close();
+    }
+
+    function openClearCalibrationDialog(plantId) {
+      var dialog = document.getElementById('clearCalibrationDialog');
+      if (!dialog) return;
+      var plant = pvPlants.find(function (p) { return p.id === plantId; });
+      var nameEl = document.getElementById('clearCalibrationPlantName');
+      if (nameEl) nameEl.textContent = plant ? plant.name : '';
+      var form = document.getElementById('clearCalibrationForm');
+      if (form) form.action = '/photovoltaik/plants/' + plantId + '/clear-calibration';
+      if (typeof dialog.showModal === 'function') dialog.showModal();
+    }
+
+    function closeClearCalibrationDialog() {
+      var dialog = document.getElementById('clearCalibrationDialog');
       if (dialog) dialog.close();
     }
 
@@ -508,6 +531,7 @@ function renderPlantDialog({ cellTypeOptions, converterTypeOptions, dialogError,
             <div class="button-row">
               <button type="submit">Speichern</button>
               <button type="button" class="secondary-button" onclick="closePlantDialog()">Abbrechen</button>
+              <button type="button" class="button-danger" id="clearCalibrationBtn" style="margin-left:auto" hidden>Kalibrierung loeschen</button>
             </div>
           </form>
         </dialog>`;
@@ -521,6 +545,19 @@ function renderDeleteDialog() {
             <div class="button-row">
               <button type="submit">Ja, loeschen</button>
               <button type="button" class="secondary-button" onclick="closeDeleteDialog()">Abbrechen</button>
+            </div>
+          </form>
+        </dialog>`;
+}
+
+function renderClearCalibrationDialog() {
+  return `        <dialog id="clearCalibrationDialog" class="value-dialog">
+          <form id="clearCalibrationForm" method="POST" class="dialog-form">
+            <h3>Kalibrierung loeschen</h3>
+            <p class="muted">Alle gelernten Kalibrierwerte fuer <strong id="clearCalibrationPlantName"></strong> werden geloescht. Die Auto-Kalibrierung startet danach neu bei 1,0.</p>
+            <div class="button-row">
+              <button type="submit" class="button-danger">Ja, loeschen</button>
+              <button type="button" class="secondary-button" onclick="closeClearCalibrationDialog()">Abbrechen</button>
             </div>
           </form>
         </dialog>`;

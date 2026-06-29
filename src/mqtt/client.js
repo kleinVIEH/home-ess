@@ -7,7 +7,7 @@ const {
   ioBrokerIdToMqttTopic,
   mqttReadCandidates,
   mqttSubscribeCandidates,
-  unwrapMqttPayload,
+  unwrapMqttMessage,
   isMeaningfulValue,
   isCommandTopic,
   parseValue,
@@ -20,6 +20,7 @@ const {
 // Engine) setzt später auf dem hier gepflegten Wert-Cache auf.
 
 let client = null;
+let clientGeneration = 0;
 let connected = false;
 let lastError = null;
 
@@ -30,7 +31,7 @@ const topicRoutes = new Map(); // exaktes incomingTopic -> [{ cacheKey, configur
 // Ad-hoc-Topics (Modul-Topics außerhalb der State-Definitionen).
 // adhocRoutes: incomingCandidate -> cacheKey (alle Read-Varianten registriert)
 // adhocConfigured: cacheKey -> configuredTopic (für Reconnect-Resubscription)
-const adhocRoutes = new Map();
+const adhocRoutes = new Map(); // incomingCandidate -> Set<cacheKey>
 const adhocConfigured = new Map();
 
 const events = new EventEmitter();
@@ -38,6 +39,15 @@ events.setMaxListeners(0);
 
 // Konfigurierte States/Lasten. Wird später aus der DB gefüllt; aktuell leer.
 let stateDefinitions = [];
+
+// Draht-Diagnose: mit HOMEESS_MQTT_DEBUG=1 werden alle ein- und ausgehenden
+// MQTT-Nachrichten protokolliert (Topic, Wert, ack). Standardmäßig still.
+const MQTT_DEBUG = process.env.HOMEESS_MQTT_DEBUG === '1' || process.env.HOMEESS_MQTT_DEBUG === 'true';
+function dbg(direction, topic, payload, extra) {
+  if (!MQTT_DEBUG) return;
+  const suffix = extra ? ` ${extra}` : '';
+  console.log(`[mqtt ${direction}] ${topic} = ${typeof payload === 'string' ? payload : JSON.stringify(payload)}${suffix}`);
+}
 
 function buildOptions(cfg) {
   return {
@@ -77,18 +87,34 @@ function subscribeAllTopics() {
   }
 }
 
+
+function requestAllStateValues() {
+  if (!client || !connected) return;
+  for (const state of stateDefinitions) {
+    for (const candidate of mqttReadCandidates(state.topic)) {
+      client.publish(`${candidate}/get`, '');
+    }
+  }
+}
+
 function handleMessage(topic, buffer) {
   const incomingTopic = normalizeMqttTopic(topic);
-  const payload = unwrapMqttPayload(buffer.toString('utf8'));
+  const { value: payload, ack } = unwrapMqttMessage(buffer.toString('utf8'));
+  dbg('<-', incomingTopic, payload, `ack=${ack}`);
   if (!isMeaningfulValue(payload)) return;
+  // ack:false ist ein Schreibwunsch/Kommando (u. a. das Echo unserer eigenen
+  // Schreibvorgänge auf dem Haupt-Topic) – kein bestätigter Ist-Zustand. Solche
+  // Nachrichten dürfen den Readback-Cache nicht verfälschen, sonst meldet die
+  // Verifikation fälschlich „bestätigt", obwohl ioBroker einen anderen Wert hält.
+  if (ack === false) return;
   const receivedAt = Date.now();
   const changedKeys = [];
   for (const route of topicRoutes.get(incomingTopic) || []) {
     valueCache.set(route.cacheKey, { value: payload, receivedAt });
     changedKeys.push(route.cacheKey);
   }
-  const adhocKey = adhocRoutes.get(incomingTopic);
-  if (adhocKey) {
+  const adhocKeys = adhocRoutes.get(incomingTopic);
+  for (const adhocKey of adhocKeys || []) {
     valueCache.set(adhocKey, { value: payload, receivedAt });
     if (!changedKeys.includes(adhocKey)) changedKeys.push(adhocKey);
   }
@@ -103,33 +129,41 @@ function connect(cfg) {
   buildTopicRoutes();
 
   const url = `mqtt://${cfg.host}:${cfg.port}`;
-  client = mqtt.connect(url, buildOptions(cfg));
+  const generation = ++clientGeneration;
+  const currentClient = mqtt.connect(url, buildOptions(cfg));
+  client = currentClient;
 
-  client.on('connect', () => {
+  currentClient.on('connect', () => {
+    if (generation !== clientGeneration || client !== currentClient) return;
     connected = true;
     lastError = null;
     subscribedTopics = new Set(); // KRITISCH: bei jedem connect leeren (Auto-Reconnect)
     subscribeAllTopics();
+    requestAllStateValues();
     subscribeAllAdhocTopics();
     requestAllAdhocValues();
   });
-  client.on('reconnect', () => {
+  currentClient.on('reconnect', () => {
+    if (generation !== clientGeneration) return;
     connected = false;
   });
-  client.on('close', () => {
+  currentClient.on('close', () => {
+    if (generation !== clientGeneration) return;
     connected = false;
   });
-  client.on('error', (err) => {
+  currentClient.on('error', (err) => {
+    if (generation !== clientGeneration) return;
     lastError = err.message;
   });
-  client.on('message', (topic, buffer) => {
-    if (client) handleMessage(topic, buffer);
+  currentClient.on('message', (topic, buffer) => {
+    if (generation === clientGeneration && client === currentClient) handleMessage(topic, buffer);
   });
 
   return client;
 }
 
 function disconnect() {
+  clientGeneration += 1;
   if (client) {
     client.end(true);
     client = null;
@@ -158,29 +192,48 @@ function onValuesChanged(listener) {
 
 // Konfigurierte States setzen und Routing/Abos neu aufbauen.
 function setStateDefinitions(defs) {
-  stateDefinitions = Array.isArray(defs) ? defs : [];
+  const nextDefinitions = Array.isArray(defs) ? defs : [];
+  const nextById = new Map(nextDefinitions.map((entry) => [String(entry.id), entry.topic]));
+  for (const previous of stateDefinitions) {
+    if (nextById.get(String(previous.id)) !== previous.topic) valueCache.delete(String(previous.id));
+  }
+  stateDefinitions = nextDefinitions;
   buildTopicRoutes();
   if (connected) {
     subscribedTopics = new Set();
     subscribeAllTopics();
+    requestAllStateValues();
   }
 }
 
 // Wert an ein Ziel-Topic schreiben (ioBroker-Konvention aus MQTT.md):
 // Command-Topics (_SET/.SET//SET) erhalten nur den Rohwert; normale States
 // erhalten zusätzlich /set (Rohwert) und das Haupt-Topic als JSON {val, ack:false}.
+//
+// Wichtig: Auf ein Wildcard kann NICHT publiziert werden – das Slash-Wildcard
+// hilft nur beim Abonnieren. Um die Notations-Unsicherheit beim Schreiben
+// (Punkt- vs. Slash-Topic, abhängig von der topic2id-Rückbildung des Adapters)
+// abzudecken, schreiben wir an alle konkreten Write-Kandidaten. Ein Adapter, der
+// die Variante nicht auf eine State-ID abbilden kann, verwirft sie folgenlos.
 function publish(targetTopic, value) {
   if (!client) return false;
   const baseTopic = ioBrokerIdToMqttTopic(normalizeMqttTopic(targetTopic));
   if (!baseTopic) return false;
 
   if (isCommandTopic(targetTopic)) {
-    client.publish(baseTopic, String(value));
+    for (const candidate of mqttReadCandidates(targetTopic)) {
+      client.publish(candidate, String(value));
+      dbg('->', candidate, String(value), 'cmd');
+    }
     return true;
   }
 
-  client.publish(`${baseTopic}/set`, String(value));
-  client.publish(baseTopic, JSON.stringify({ val: parseValue(value), ack: false }));
+  const json = JSON.stringify({ val: parseValue(value), ack: false });
+  for (const candidate of mqttReadCandidates(targetTopic)) {
+    client.publish(`${candidate}/set`, String(value));
+    client.publish(candidate, json);
+    dbg('->', candidate, json, '(+/set)');
+  }
   return true;
 }
 
@@ -193,6 +246,7 @@ function testConnection(cfg) {
       password: cfg.password || undefined,
       connectTimeout: 5000,
       reconnectPeriod: 0,
+      clean: true,
     });
 
     let settled = false;
@@ -214,7 +268,9 @@ function testConnection(cfg) {
 // Routen für alle Lese-Kandidaten eines konfigurierten Topics eintragen.
 function registerAdhocRoutes(configuredTopic, cacheKey) {
   for (const candidate of mqttReadCandidates(configuredTopic)) {
-    adhocRoutes.set(candidate, cacheKey);
+    const keys = adhocRoutes.get(candidate) || new Set();
+    keys.add(cacheKey);
+    adhocRoutes.set(candidate, keys);
   }
 }
 
@@ -260,9 +316,22 @@ function unsubscribeAdHoc(cacheKey) {
   const configuredTopic = adhocConfigured.get(cacheKey);
   if (!configuredTopic) return;
   for (const candidate of mqttReadCandidates(configuredTopic)) {
-    adhocRoutes.delete(candidate);
+    const keys = adhocRoutes.get(candidate);
+    if (!keys) continue;
+    keys.delete(cacheKey);
+    if (!keys.size) adhocRoutes.delete(candidate);
   }
   adhocConfigured.delete(cacheKey);
+  valueCache.delete(cacheKey);
+}
+
+function requestAdHocValue(cacheKey) {
+  const configuredTopic = adhocConfigured.get(cacheKey);
+  if (!configuredTopic || !client || !connected) return false;
+  for (const candidate of mqttReadCandidates(configuredTopic)) {
+    client.publish(`${candidate}/get`, '');
+  }
+  return true;
 }
 
 module.exports = {
@@ -274,6 +343,7 @@ module.exports = {
   setStateDefinitions,
   subscribeAdHoc,
   unsubscribeAdHoc,
+  requestAdHocValue,
   publish,
   testConnection,
 };

@@ -13,18 +13,41 @@ const {
   loadBatterieConfig,
   buildBatterieStateDefinitions,
 } = require('../batterie/config');
+const { loadGridControlConfig, buildGridControlStateDefinitions } = require('../grid-control/config');
+const { isEnabled } = require('../modules');
+const { AUTARK_DAYS_STATE_ID, AUTARK_DAYS_PREVIOUS_YEAR_STATE_ID } = require('../operating-state');
 
 async function loadAllStateDefinitions(db) {
   const mqttConfig = await new Promise((resolve) => loadMqttConfig(db, resolve));
   const stromverbrauchConfig = await new Promise((resolve) => loadStromverbrauchConfig(db, resolve));
   const batterieConfig = await new Promise((resolve) => loadBatterieConfig(db, resolve));
   const pvPlants = await listPvPlants(db);
-  return [
+  const operatingRow = await new Promise((resolve) => {
+    db.get(
+      'SELECT autark_days_topic, autark_days_previous_year_topic FROM operating_state WHERE id = 1',
+      (err, row) => resolve(err ? null : row)
+    );
+  });
+  const definitions = [
     ...buildMqttStateDefinitions(mqttConfig),
     ...buildStromverbrauchStateDefinitions(stromverbrauchConfig),
     ...buildBatterieStateDefinitions(batterieConfig),
     ...buildPhotovoltaikStateDefinitions(pvPlants),
   ];
+  if (operatingRow && operatingRow.autark_days_topic) {
+    definitions.push({ id: AUTARK_DAYS_STATE_ID, topic: operatingRow.autark_days_topic });
+  }
+  if (operatingRow && operatingRow.autark_days_previous_year_topic) {
+    definitions.push({
+      id: AUTARK_DAYS_PREVIOUS_YEAR_STATE_ID,
+      topic: operatingRow.autark_days_previous_year_topic,
+    });
+  }
+  if (isEnabled('grid-control')) {
+    const gridControlConfig = await new Promise((resolve) => loadGridControlConfig(db, resolve));
+    definitions.push(...buildGridControlStateDefinitions(gridControlConfig));
+  }
+  return definitions;
 }
 
 module.exports = { loadAllStateDefinitions };

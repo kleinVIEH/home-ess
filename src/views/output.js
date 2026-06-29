@@ -19,7 +19,7 @@ function renderOutput({
           <div class="panel-head">
             <div>
               <h2>Outputs</h2>
-              <p class="muted">Jeder Output schreibt einen internen Wert an ein Ziel-Topic im ioBroker. Der Wert wird beim Anlegen, Bearbeiten und bei jeder Wertaenderung uebergeben.</p>
+              <p class="muted">Jeder Output wird alle 30 Sekunden aktiv aus ioBroker zurückgelesen. Fehlende oder abweichende Werte werden automatisch erneut geschrieben.</p>
             </div>
             <button type="button" class="settings-form button-inline" onclick="openOutputDialog('add')">Hinzufuegen</button>
           </div>
@@ -87,10 +87,21 @@ function renderOutput({
         data.outputs.forEach(function (output) {
           var node = document.getElementById('output-value-' + output.id);
           if (node) node.textContent = output.currentDisplay == null ? '—' : output.currentDisplay;
+          var badge = document.getElementById('output-verify-' + output.id);
+          if (badge && output.verification) setVerificationBadge(badge, output.verification.state);
         });
       } catch (_) {
         // Anzeige bleibt auf dem letzten gueltigen Stand.
       }
+    }
+
+    function setVerificationBadge(node, state) {
+      var labels = {
+        confirmed: 'bestätigt', mismatch: 'abweichend', waiting: 'warte auf Bestätigung',
+        disconnected: 'MQTT getrennt', 'no-value': 'kein Sollwert', unsupported: 'nicht verifizierbar'
+      };
+      node.textContent = labels[state] || 'warte auf Bestätigung';
+      node.className = state === 'confirmed' ? 'cmd-confirm cmd-confirm--ok' : 'cmd-confirm cmd-confirm--bad';
     }
 
     if (initialDialogMode === 'add') {
@@ -120,10 +131,17 @@ ${sorted.map(renderOutputRow).join('\n')}
 function renderOutputRow(output) {
   const label = output.label || output.sourceId;
   const currentDisplay = output.currentDisplay == null ? '—' : output.currentDisplay;
+  const verification = output.verification || { state: 'waiting' };
+  const verificationLabels = {
+    confirmed: 'bestätigt', mismatch: 'abweichend', waiting: 'warte auf Bestätigung',
+    disconnected: 'MQTT getrennt', 'no-value': 'kein Sollwert', unsupported: 'nicht verifizierbar',
+  };
+  const verificationClass = verification.state === 'confirmed' ? 'cmd-confirm cmd-confirm--ok' : 'cmd-confirm cmd-confirm--bad';
   return `            <div class="output-row">
               <span class="output-row-label">${escapeHtml(label)}</span>
               <span class="output-row-topic muted">→ ${escapeHtml(output.targetTopic)}</span>
               <span class="output-row-value" id="output-value-${output.id}">${escapeHtml(currentDisplay)}</span>
+              <span class="${verificationClass}" id="output-verify-${output.id}">${escapeHtml(verificationLabels[verification.state] || verificationLabels.waiting)}</span>
               <div class="output-row-actions">
                 <button type="button" class="secondary-button" onclick="openOutputDialog('edit', ${output.id})">Bearbeiten</button>
                 <button type="button" class="icon-button" aria-label="Output loeschen" title="Output loeschen" onclick="openDeleteDialog(${output.id}, ${toJsStringLiteral(label)})">🗑</button>
@@ -164,7 +182,7 @@ function renderOutputDialog({ internalValues, dialogError, dialogValues, dialogM
               <label class="field-block" for="outputTargetTopic">
                 <span>Ziel-Topic</span>
                 <input type="text" id="outputTargetTopic" name="targetTopic" value="${escapeHtml(values.targetTopic)}" placeholder="z.B. 0_userdata.0.homeess.SoC" required>
-                <small class="muted form-hint">State-ID oder Topic im ioBroker. Command-Topics (_SET/.SET//SET) werden als Rohwert geschrieben.</small>
+                <small class="muted form-hint">Bestätigter State im ioBroker. Command-Topics sind nicht zulässig, weil sie keinen sicheren Istwert zurückmelden.</small>
               </label>
             </div>
             <div class="button-row">

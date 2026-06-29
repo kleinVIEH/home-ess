@@ -10,7 +10,8 @@
 Basis für ein **Energy Storage System (ESS)**. Der Server abonniert
 MQTT-Topics (Quelle: ioBroker-Broker), hält die eingehenden Werte in einem
 Cache und soll daraus ableiten, **wie Lasten geschaltet werden** (Regel-Engine,
-noch nicht implementiert). Bedienoberfläche ist ein Web-Dashboard mit
+deren Betriebslevel bereits prognosegeführt werden; die Zuordnung konkreter
+Verbraucher zu den Leveln ist noch nicht implementiert). Bedienoberfläche ist ein Web-Dashboard mit
 vorgeschaltetem Login.
 
 **Aktueller Funktionsstand:**
@@ -58,17 +59,26 @@ vorgeschaltetem Login.
   der **gemessene Leistungs-Durchschnitt** der letzten 15 Minuten gegen die von
   **Open-Meteo gelieferte Strahlung desselben Fensters** (`minutely_15`, in
   erwartete Leistung umgerechnet) verglichen und der Bucket sanft per EMA (α≈0,05)
-  auf `gemessen/erwartet` nachgezogen. Weil die Wetter-Strahlung die Bewölkung
-  bereits enthält, fällt das frühere Klarhimmel-Gate weg; verbleibende Gates: hoher
-  Sonnenstand (erwartet ≥ 20 % Peak), kein voller Akku (`batterie.soc`, Abregelung),
-  Verhältnis plausibel (0,4–1,3). Der Messdurchschnitt wird über die 60-s-Ticks im
-  Speicher akkumuliert. Ein **neuer Bucket** übernimmt den Faktor des vorangehenden
-  Buckets als Startwert (statt 1,0); der frisch berechnete Faktor wird zudem auf den
-  neuen (aktuellen) Bucket übernommen, sofern dort noch kein Wert (z. B. aus dem
-  Vorjahr) liegt. Sobald ein Bucket einen Wert besitzt, multipliziert sein Faktor den
-  Idealwert (`idealEffektiv = idealBasis × factor`) — wirkt auf Live-Ideal,
-  Sonnenintensität **und** Prognose und bildet u. a. Verschattung ab. Der aktuelle
-  Faktor wird zur Diagnose in der Anlagenzeile angezeigt. Tick im 60-s-Job
+  auf `gemessen/erwartet` nachgezogen (Faktor wirkt in **beide Richtungen**,
+  geklammert 0,2–1,5). Weil die Wetter-Strahlung die Bewölkung bereits enthält,
+  fällt das frühere Klarhimmel-Gate weg; verbleibende Gates: kein voller Akku
+  (`batterie.soc`, Abregelung), Verhältnis plausibel (0,4–1,5) und ein
+  **anlagenspezifischer Sonnenstand-Cutoff** — kalibriert wird nur, wenn die
+  erwartete Leistung den morgens/abends konfigurierten Sonnenreferenz-Cutoff
+  (`sun_cutoff_morning/_evening`, Default 10 % der kWp-Spitze) überschreitet. So
+  kalibriert eine Westanlage nur nachmittags, eine Ostanlage nur vormittags. Der
+  Messdurchschnitt wird über die 60-s-Ticks im Speicher akkumuliert. Ein **neuer
+  Bucket** übernimmt den Faktor des vorangehenden Buckets als Startwert (statt 1,0);
+  der frisch berechnete Faktor wird zudem auf den neuen (aktuellen) Bucket
+  übernommen, sofern dort noch kein Wert (z. B. aus dem Vorjahr) liegt. Hat ein
+  Bucket keinen eigenen Wert (Randzeiten außerhalb des Kalibrierfensters), liefert
+  `effectiveFactor` den Faktor des **rückwärts nächstgelegenen** kalibrierten
+  Buckets — die Mittagskalibrierung trägt so sanft in Morgen-/Abendstunden, ohne
+  Sprung auf 1,0. Sobald ein Faktor wirkt, multipliziert er den Idealwert
+  (`idealEffektiv = idealBasis × factor`) — auf Live-Ideal, Sonnenintensität **und**
+  Prognose, bildet u. a. Verschattung ab. Der aktuelle Faktor wird zur Diagnose in
+  der Anlagenzeile angezeigt; **„Kalibrierung löschen“** (Bearbeiten-Dialog, mit
+  Sicherheitsabfrage) verwirft alle Buckets einer Anlage. Tick im 60-s-Job
   (`app.js`). **Bucket-Reset** beim Löschen einer Anlage sowie bei Änderung von
   Ausrichtung oder Gesamtleistung (`plants.js`).
 - **Sonnenintensität** (`photovoltaik/sun-intensity.js`): Ist/Ideal in %,
@@ -86,10 +96,96 @@ vorgeschaltetem Login.
   Live-Updates via SSE. State-Definitionen integriert (kein Ad-hoc-System).
   **Titelzeile:** Batterie-Ladeanzeige als Icon mit Füllstand + Prozentzahl,
   erscheint automatisch sobald `batterie.soc`-Wert im Cache vorhanden ist.
+  Zusätzlich: Mindest-SoC-Ziel-Topic mit 5-%-Regler und Batterieparameter
+  (Typ, Zellzahl, Kapazität in Ah, untere/obere Gesamtspannung). Die Prognose
+  leitet daraus über die zelltypspezifische Nennspannung die Energie in kWh ab.
+  Der Wertekatalog stellt außerdem die abgeleiteten Batteriezustände Charge,
+  Charged today, Discharging, Empty, Full, Good, HalfCharged, High, Overflow und
+  Reserve bereit. Schwellen beziehen sich auf den dynamischen Mindest-SoC:
+  Reserve endet bei 30 %, Good beginnt bei 25 % und HalfCharged bei 50 % des
+  nutzbaren Bereichs bis 100 %; High gilt über 90 %, Full über 98 %. Charged
+  today wird persistent bis zum lokalen Tageswechsel gehalten.
+- **Systemprognose** (`/prognose`, `prognosis/forecast.js`): simuliert heute +
+  drei Folgetage stündlich aus PV-Wetterprognose, Verbrauch und Batterie. Die
+  nutzbare Batterie endet am Mindest-SoC; Lade- und Entladewirkungsgrad werden
+  getrennt gerechnet. Der Verbrauch startet mit dem bisherigen Jahresmittel und
+  mischt schrittweise einen exponentiell gewichteten Mittelwert der letzten
+  konfigurierbaren Tage ein. Ein Haushalts-Standardstundenprofil wird innerhalb
+  von 14 vollständigen Lerntagen durch das eigene Lastprofil ersetzt; der heutige
+  Verlauf kalibriert die Restprognose begrenzt nach. 60-s-Sampling persistiert
+  Tagesstände in `prognosis_daily_consumption` und Zählerdifferenzen stündlich in
+  `prognosis_hourly_consumption`. 38 Ergebnisse sind als `prognose.*` im
+  Wertekatalog verfügbar. Zusätzlich zeigt die Seite den persistenten
+  `operating.autark`-Tagesstatus. Beim lokalen Tageswechsel wird ein
+  Jahreszähler nur dann erhöht, wenn der Tag weiterhin autark endete; ein
+  optionales MQTT-Topic synchronisiert diesen Zähler bidirektional und bietet
+  beim Einrichten die Übernahme des externen Startwerts an. Beim Jahreswechsel
+  wird nach Wertung des 31. Dezember der vollständige Stand samt Jahreskennung
+  in „Autarke Tage Vorjahr“ verschoben und der aktuelle Stand zurückgesetzt.
+  Der Vorjahresstand hat ein separates optionales MQTT-Abgleich-Topic nach
+  demselben Muster.
+  Die Batteriesimulation sucht ab dem Folgetag den ersten Zeitslot mit
+  `PV > Verbrauch` und freier Akkukapazität. Bleibt der Folgetag ohne Ladebeginn,
+  wird über alle weiteren sichtbaren Open-Meteo-Tage kumuliert. Heutiger
+  Überschuss fließt in den Akkustand ein, beendet das Nachtfenster aber nicht.
+  SoC, Tagesoffset und Uhrzeit dieses Ladebeginns sowie das erste erwartete
+  Erreichen des Mindest-SoC stehen im Wertekatalog. Die Ampel bewertet primär
+  Netzbedarf beziehungsweise Mindest-SoC bis zum Ladebeginn; Tagesend-SoC ist
+  nachgeordnet.
+  Der Katalog bildet außerdem die früheren ioBroker-Prognosegrößen ab:
+  dynamischer Tagesdurchschnitt, 24-h-Hochrechnung aus der letzten Stunde,
+  Verbrauch bis zum nächsten Sonnenaufgang aus Stundenprofil beziehungsweise
+  letzter Stunde, Gesamtbedarf inklusive Akkufüllung, verfügbare, fehlende und
+  freie Energie. Der Sonnenaufgang folgt der Standortgeometrie; ohne Koordinaten
+  dient 06:00 Uhr als definierter Ersatz.
+  Verbrauchssampling speichert neben dem Rohwert den um Batterieenergie
+  bereinigten Hausverbrauch: `DeltaVerbrauch − BatterieLeistung × Zeit`, wobei
+  positive Batterieleistung Laden und negative Entladen bedeutet. Aus den
+  bereinigten Stundenwerten entstehen sieben getrennte, weich gelernte
+  Wochentagsprofile samt wochentagsabhängigem Tagesniveau; bei wenig Daten wird
+  zum globalen beziehungsweise Standard-Haushaltsprofil zurückgeblendet.
+  Persistente Verhaltensmodelle (`prognosis_config.behavior_model/_active`):
+  `grid_parallel` ordnet Prognosezustände mit spätem Abregeln und Netz als Backup
+  zu; `off_grid` bewertet Mindest-SoC und Energiebilanz aller sichtbaren Tage und
+  kann vorausschauend auch Level 1 setzen. `prognosis/behavior.js` läuft nach dem
+  60-s-Verbrauchssampling sowie unmittelbar beim Aktivieren und besitzt exklusiv
+  alle Level 1–5. Unter Mindest-SoC setzt es Level 1 auch bei deaktiviertem
+  Verhaltensmodell. Im Autarkbetrieb erfordert Level 5 SoC > 98 % plus Überschuss;
+  im Netzparallelbetrieb gilt die obere Grid-Control-SoC-Schwelle als voll, bei
+  deaktiviertem Grid-Control ersatzweise 90 %. Grid-Control verwaltet nur noch
+  das Ein- und Ausschalten des persistenten Notstromzustands.
+- **Grid-Control** (`/grid-control`, optional): Netz- und Einspeisungssteuerung
+  über getrennte untere/obere SoC- und Spannungs-Schaltfenster mit lokaler
+  Hysterese sowie Wechselrichter-Temperaturwarnung. Die **obere SoC-Grenze**
+  schaltet das Netz nur zu, wenn **Überschusseinspeisung aktiviert** ist.
+  Veröffentlicht Warnungen und stellt fünf Grid-Zustände im Wert-Katalog bereit.
+  Netzfrequenz 0 nach konfigurierbarer Wartezeit auf einer beliebigen Phase
+  verriegelt einen persistenten Notstromzustand; erst L1/L2/L3 jeweils > 0
+  entriegeln ihn. Überalterte Frequenzwerte (Frische-Prüfung) entriegeln **nicht**.
+  Dreiphasige Lastschaltung auf Basis der bestehenden Eigenverbrauchsleistung
+  L1–L3 mit separaten Ein-/Ausschaltschwellen und `grid.byLoad`. Globaler Zustand in `operating-state.js`
+  (`operatingLevel` 1–5, `emergencyMode` Boolean), visualisiert im Header.
+  Dort liegt auch der persistente Tages-Latch `autark`; im Wert-Katalog als
+  `operating.autark`. Eine untere SoC-Netzschaltung setzt ihn bis Tagesende false.
+  - **Geschlossene Regelschleife** (`grid-control/automation.js`): jeder Tick (2 s
+    + bei MQTT-Änderung) gleicht den Soll-Wert gegen die **tatsächliche
+    Broker-Rückmeldung** der Befehls-Topics ab und schreibt bei Abweichung erneut
+    (selbstheilend nach verlorenem Write/Reconnect); bleibt die Bestätigung > 20 s
+    aus, wird gewarnt. Bestätigt gilt nur, wenn verbunden **und** der Broker den
+    Soll-Wert (`ack:true`/Rohwert) zurückmeldet. Status je Befehl im UI als Badge.
+  - **Protokoll** (`grid-control/log.js`, Tabelle `grid_control_log`, max. 2000):
+    nur **Schwellen-Übertritte mit Aktionen** (gelb) und **kritische Zustände**
+    (rot), einzeilig mit Zeitstempel + Werte-Schnappschuss; paginiert
+    (100/Seite, `/grid-control/log`), Seite 1 live, ab Seite 2 statisch. Reine
+    Wertänderungen werden bewusst **nicht** protokolliert.
 - **Output** (`/output`): beliebige berechnete Werte (Wert-Katalog) an
   ioBroker-**Ziel-Topics** zurückgeben. Die **Engine** (`output/engine.js`)
-  wertet den Katalog debounced bei MQTT-Änderungen + alle 60 s aus und
-  publiziert je Output nur bei Wertänderung (`client.publish` gemäß MQTT.md).
+  arbeitet als geschlossene Regelschleife: Ziel-States werden abonniert, alle
+  30 s aktiv per `/get` gelesen und nur eine frische Broker-Rückmeldung gilt als
+  Bestätigung. Bei fehlendem oder abweichendem Istwert wird rate-limitiert erneut
+  publiziert; `ack:false`-Schreib-Echos zählen nicht. Die Seite zeigt je Output
+  den Bestätigungsstatus. Command-Topics sind ausgeschlossen, weil sie keinen
+  verifizierbaren Istwert bereitstellen.
 - **Optionale Module** (`src/modules/index.js`): generische Registry +
   In-Memory-Enabled-State; Seite `/module` zum Aktivieren/Deaktivieren.
   Aktivierte Module erscheinen automatisch in der Sidebar. Aktuell:
@@ -114,7 +210,7 @@ vorgeschaltetem Login.
 - **Wert-Katalog** (`output/internal-values.js`): berechnete und gemessene Werte
   für Outputs und Dashboard-Widgets. Enthält PV, Stromverbrauch, Sonnenintensität,
   **PV-Prognose** (erwarteter Tagesertrag heute/morgen/+2/+3 sowie heute bisher /
-  heute noch erwartet) **sowie Batterie-Werte** (SoC, Leistung, Spannung,
+  heute noch erwartet), **Systemprognose** (`prognose.*`) **sowie Batterie-Werte** (SoC, Leistung, Spannung,
   Temperatur) und **Pool-Werte** (Wassertemperatur, Pumpen-Status, pH, Chlor — nur
   wenn Modul aktiv). Die Kalibrierfaktoren sind bewusst **nicht** im Katalog (reine
   Diagnose). Alle Einträge haben `id`, `label`, `value`, `display`.
@@ -148,6 +244,8 @@ src/
   config.js               Zentrale Konstanten (Port, Cookie, DB-Pfad, Timeouts)
   db.js                   SQLite öffnen, Schema, Seed, Migrationen
   app.js                  Express-App zusammenbauen + periodische Jobs
+  operating-state.js      Globaler Zustand (operatingLevel 1–5, emergencyMode,
+                          Tages-Latch autark), persistent in `operating_state`
   modules/
     index.js              Modul-Registry + In-Memory-Enabled-State
   auth/
@@ -185,6 +283,12 @@ src/
                           readPoolValue
     automation.js         Pump-Automation (solar/filter), Modus-Buttons,
                           getEffectivePriority, getPumpMode/setPumpMode
+  grid-control/
+    config.js             Topics/Schwellen laden/speichern, State-Definitionen,
+                          readGridControlBrokerValues
+    automation.js         Schaltlogik + geschlossene Regelschleife (Verifikation
+                          gegen Broker-Readback), Notstrom, Audit-Logging
+    log.js                Audit-Log (`grid_control_log`): append/read, Pagination
   output/
     internal-values.js    Katalog (PV, Strom, Batterie, Pool, Sonne)
     outputs.js            Output-CRUD
@@ -203,6 +307,8 @@ src/
     modules.js            GET /module + POST /module/:key/enable|disable
     pool.js               GET /pool + POST /pool/config + GET /pool/status
                           + POST /pool/pump/:which/:mode
+    grid-control.js       GET /grid-control + POST /grid-control/config
+                          + GET /grid-control/status + GET /grid-control/log
   views/
     components.js         escapeHtml, statusText
     layout.js             App-Hülle + Nav + Header-Live-Script (inkl. Batterie-Icon)
@@ -215,6 +321,8 @@ src/
     settings.js           Einstellungen
     modules.js            Modul-Verwaltung
     pool.js               Pool — KPI-Kacheln + Pumpen-Buttons + Config
+    grid-control.js       Grid-Control — Zustände, Config, Bestätigungs-Badges,
+                          Protokoll-Panel (live Seite 1, paginiert)
 public/styles.css         Einziges statisches Asset
 data/app.db               SQLite (gitignored)
 MQTT.md                   Referenz: ioBroker-MQTT-Regeln
@@ -243,7 +351,14 @@ MQTT.md                   Referenz: ioBroker-MQTT-Regeln
 - `outputs(id, source_id, target_topic)`
 - `dashboard_groups(id, title, width, position)`
 - `dashboard_widgets(id, source_id, group_id, position)`
-- `batterie_config(id=1, soc_topic, power_topic, voltage_topic, temperatur_topic)`
+- `batterie_config(id=1, soc/power/voltage/temperatur/min_soc_topic, min_soc,
+  capacity_ah, battery_type, cell_count, lower_voltage, upper_voltage)`
+- `battery_daily_state(id=1, day_key, charged_today)`
+- `prognosis_config(id=1, charge/discharge_efficiency, history_days,
+  behavior_model, behavior_active)`
+- `prognosis_daily_consumption(day_key, consumption_kwh, raw_consumption_kwh,
+  max_temperature, completed, updated_at)`
+- `prognosis_hourly_consumption(day_key, hour, consumption_kwh)`
 - `modules(key TEXT PRIMARY KEY, enabled INTEGER)` — aktivierte optionale Module.
 - `pool_config(id=1, temperature_topic, solar_pump_status_topic,
   solar_pump_command_topic, solar_pump_priority, solar_pump_max_temp,
@@ -252,23 +367,35 @@ MQTT.md                   Referenz: ioBroker-MQTT-Regeln
   filter_pump_command_topic, filter_pump_priority, filter_pump_follow_solar,
   filter_time_1_start/end, filter_time_2_start/end, filter_time_3_start/end,
   filter_battery_enabled, filter_battery_soc, ph_topic, chlor_topic)`
+- `grid_control_config(id=1, grid/feed_in_command_topic, temperature_warning_*,
+  warning_text/active_topic, soc/voltage/temperature/load_enabled, feed_in_allowed,
+  soc_lower/upper_offset, soc/voltage_hysteresis, grid_frequency_l1-3_topic,
+  grid_detection_seconds, load_on/off_l1-3)`
+- `operating_state(id=1, operating_level 1–5, emergency_mode, autark,
+  autark_day_key, autark_days_count/year/counted_day_key/topic,
+  autark_days_previous_year_count/year/topic)`
+- `grid_control_log(id, ts, category 'info'|'action'|'critical', message,
+  values_text)` — Audit-Log, automatisch auf 2000 Einträge beschnitten.
 
 > **Wert-Katalog** (`output/internal-values.js`): Outputs **und** Dashboard-Widgets
 > beziehen ihre Werte aus demselben Katalog. Enthält PV (Leistungen, Erträge,
 > Sonne), Stromverbrauch (Leistungen, Energien je Zeitraum, Zählersummen),
 > Sonnenintensität, **PV-Prognose** (Tagesertrag heute/morgen/+2/+3 sowie heute
-> bisher / noch erwartet), **Batterie** (SoC, Leistung, Spannung, Temperatur — wenn
-> konfiguriert), **Pool** (Wassertemperatur, Pumpen-Status, pH, Chlor — wenn
-> Modul aktiv). Jeder Eintrag hat `id`, `label`, `value`, `display`.
+> bisher / noch erwartet), **Systemprognose** (38 Werte), **Batterie** (Messwerte,
+> Energie/Restzeit und abgeleitete Zustände), **Betriebszustand**, **Grid-Control**
+> sowie **Pool** (wenn das jeweilige Modul aktiv ist). Jeder Eintrag hat `id`,
+> `label`, `value`, `display`.
 
-## MQTT Ad-hoc-Subscriptions (Pool)
+## MQTT Ad-hoc-Subscriptions (Pool und Output-Readback)
 
 Pool-Topics liegen außerhalb der normalen State-Definitionen (Pool ist optional,
 Topics ändern sich per Config). `client.subscribeAdHoc(configuredTopic, cacheKey)`
 registriert alle `mqttReadCandidates` als Routen und abonniert alle
 `mqttSubscribeCandidates` (inkl. Wildcard für Slash-States). `/get`-Anfragen
 werden beim Subscribe und beim Reconnect gesendet. Cache-Keys: `pool:<topic>`.
-Abgerufen über `readPoolValue(cache, topic)`.
+Abgerufen über `readPoolValue(cache, topic)`. Die Output-Regelschleife verwendet
+pro Ziel-State einen gemeinsamen `output.readback:<topic>`-Cache-Key und fordert
+den Istwert zusätzlich alle 30 Sekunden aktiv an.
 
 ## Prioritäten / Last-Management (Vorbereitung)
 
@@ -286,6 +413,15 @@ analoge `getActors(cfg)`-Funktion exportieren, die ein zentrales Modul
   sonst Session-Cookie (serverseitig 12 h gültig).
 - **Passwörter gehasht** (Node `crypto.scrypt`). Default beim ersten Start: `admin`.
 - **MQTT/ioBroker-Regeln** in [MQTT.md](MQTT.md) und in `mqtt/topics.js` umgesetzt.
+- **ack-Unterscheidung beim Readback:** Eingehende Nachrichten mit `ack:false`
+  sind Schreibwünsche/Kommandos (u. a. das Echo eigener Schreibvorgänge auf dem
+  Haupt-Topic) und werden **nicht** als Broker-Stand gecacht. Nur `ack:true` bzw.
+  Rohwerte gelten als bestätigter Ist-Zustand (`unwrapMqttMessage` in `topics.js`,
+  Filter in `client.js`). Grundlage der Schalt-Verifikation in Grid-Control.
+- **Slash-Schreib-Limitierung:** State-IDs mit eingebettetem Slash (Modbus/Victron,
+  z. B. `…3500_/ManualStart`) lassen sich per MQTT nur **lesen** (Wildcard-Abo),
+  nicht zuverlässig **schreiben** (der Broker bildet `/`→`.` falsch zurück). Lösung:
+  für Schalt-Ziel-Topics **slash-freie** Namen verwenden. Siehe [MQTT.md](MQTT.md).
 - **Batterie = zentrales Element**: `batterie.soc` ist der einzige SoC-Wert
   der gesamten Plattform. Der Pool-Akku-Override liest diesen State direkt aus
   dem Cache — kein eigenes Topic. Das Batterie-SoC-Icon in der Titelzeile ist

@@ -82,6 +82,7 @@ function buildForecast(weather, plants, config, factorsMap = null, nowLocal = nu
   // Wh je Tag (Schlüssel = lokales Datum) und je Anlage aufsummieren.
   const dayOrder = [];
   const dayTotals = new Map(); // dateKey -> { total, elapsed, perPlant: Map }
+  const hourlyTotals = new Map(); // `${dateKey}:${hour}` -> { wh, temp }
   let currentPowerWatt = null; // erwartete Gesamtleistung im aktuellen Stunden-Slot
 
   for (const hour of weather.hours) {
@@ -104,6 +105,7 @@ function buildForecast(weather, plants, config, factorsMap = null, nowLocal = nu
       currentHourIndex != null &&
       hour.hour === currentHourIndex;
     let currentHourTotal = 0;
+    let hourTotal = 0;
 
     const geometry = solarGeometryAt(
       config,
@@ -132,8 +134,16 @@ function buildForecast(weather, plants, config, factorsMap = null, nowLocal = nu
       bucket.total += watt;
       if (elapsedFraction > 0) bucket.elapsed += watt * elapsedFraction;
       bucket.perPlant.set(plant.id, (bucket.perPlant.get(plant.id) || 0) + watt);
+      hourTotal += watt;
       if (isCurrentHour) currentHourTotal += watt;
     }
+
+    const hourKey = `${key}:${hour.hour}`;
+    const previousHour = hourlyTotals.get(hourKey) || { wh: 0, temperature: null };
+    hourlyTotals.set(hourKey, {
+      wh: previousHour.wh + hourTotal,
+      temperature: hour.temp == null ? previousHour.temperature : hour.temp,
+    });
 
     if (isCurrentHour) currentPowerWatt = currentHourTotal;
   }
@@ -170,6 +180,17 @@ function buildForecast(weather, plants, config, factorsMap = null, nowLocal = nu
     todayElapsedFormatted: todayElapsedKwh == null ? null : formatEnergy(todayElapsedKwh),
     todayRemainingFormatted: todayRemainingKwh == null ? null : formatEnergy(todayRemainingKwh),
     currentPowerWatt,
+    // Interne Prognose nutzt die Stundenenergie zur realistischeren Batterie-
+    // simulation. Das bestehende öffentliche PV-JSON bleibt davon unberührt.
+    hours: Array.from(hourlyTotals.entries()).map(([key, values]) => {
+      const splitAt = key.lastIndexOf(':');
+      return {
+        dateKey: key.slice(0, splitAt),
+        hour: Number(key.slice(splitAt + 1)),
+        kwh: values.wh / 1000,
+        temperature: values.temperature,
+      };
+    }),
   };
 }
 

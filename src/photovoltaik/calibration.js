@@ -29,11 +29,13 @@ const ALPHA = 0.05;
 
 // Gates für ein verwertbares Kalibrier-Fenster.
 const CURTAIL_SOC_MAX = 95; // % Batterie-SoC — darüber droht Abregelung (Curtailment)
-const CALIB_MIN_FRACTION = 0.2; // erwartete Leistung ≥ 20 % der Peakleistung (hoher Sonnenstand)
+// Kein globales CALIB_MIN_FRACTION mehr — die Schwelle kommt je Anlage aus
+// sunCutoffMorning / sunCutoffEvening (Standard 10 %).
+const CALIB_CUTOFF_PERCENT_DEFAULT = 10;
 const RATIO_MIN = 0.4; // Plausibilitätsband für gemessen/erwartet
-const RATIO_MAX = 1.3;
+const RATIO_MAX = 1.5; // war 1.3 — erlaubt nun auch Übererfüllung als Kalibrierimpuls
 const FACTOR_MIN = 0.2; // Clamp des Kalibrierfaktors
-const FACTOR_MAX = 1.15;
+const FACTOR_MAX = 1.5; // war 1.15 — Kalibrierung funktioniert jetzt in beide Richtungen
 
 // Laufende 15-min-Messfenster je Anlage: plantId → { bucket, sum, count }.
 // Wird über die 60-Sekunden-Ticks aufgefüllt und beim Bucket-Wechsel
@@ -124,14 +126,21 @@ function getFactor(factorsMap, plantId, bucket) {
   return entry || { factor: 1, sampleCount: 0 };
 }
 
-// Wirksamer Faktor für die Anwendung auf den Idealwert: sobald für den Bucket ein
-// (gelernter oder vom Nachbar-Bucket übernommener) Wert existiert und die Anlage
-// Auto-Kalibrierung aktiviert hat. Ohne Eintrag bleibt es bei 1.0.
+// Wirksamer Faktor für die Anwendung auf den Idealwert. Hat der aktuelle Bucket
+// noch keinen eigenen Eintrag (z. B. morgens/abends außerhalb des Kalibrierfensters),
+// wird rückwärts im Tageskreis gesucht – so erben nicht kalibrierte Randzeiten vom
+// letzten bekannten Bucket statt auf 1,0 zurückzufallen.
 function effectiveFactor(factorsMap, plant, bucket) {
   if (!plant || !plant.autoCalibrate) return 1;
   const perPlant = factorsMap && factorsMap.get(plant.id);
-  const entry = perPlant && perPlant.get(bucket);
-  return entry ? entry.factor : 1;
+  if (!perPlant || perPlant.size === 0) return 1;
+  const entry = perPlant.get(bucket);
+  if (entry) return entry.factor;
+  for (let offset = 1; offset < BUCKET_COUNT; offset++) {
+    const prev = perPlant.get((bucket - offset + BUCKET_COUNT) % BUCKET_COUNT);
+    if (prev) return prev.factor;
+  }
+  return 1;
 }
 
 function upsertBucket(db, plantId, bucket, factor, sampleCount, ts) {
@@ -201,8 +210,15 @@ async function finalizeWindow(db, cache, config, weather, plant, completedBucket
 
   const expected = expectedPowerFromWeather(config, weather, plant, date, matchTime);
   if (expected == null || expected <= 0) return;
-  // Hoher-Sonnenstand-Gate: nur bei kräftiger erwarteter Leistung kalibrieren.
-  if (expected < CALIB_MIN_FRACTION * kwPeak * 1000) return;
+  // Anlagen-spezifischer Sonnenstand-Gate: Kalibrierung nur wenn die erwartete
+  // Leistung den morgens/abends konfigurierten Cutoff (Prozent der Peakleistung)
+  // überschreitet. Damit wird eine Anlage nur dann kalibriert, wenn die Sonne in
+  // einem sinnvollen Winkel zu ihrer Modulebene steht.
+  const endDecimalHours = matchTime.hours + matchTime.minutes / 60;
+  const calibCutoff = endDecimalHours < 12
+    ? (plant.sunCutoffMorning ?? CALIB_CUTOFF_PERCENT_DEFAULT)
+    : (plant.sunCutoffEvening ?? CALIB_CUTOFF_PERCENT_DEFAULT);
+  if (expected < (calibCutoff / 100) * kwPeak * 1000) return;
 
   // Abregelungs-Gate: voller Akku → gemessen kann gedrosselt sein.
   const soc = getCacheValue(cache, 'batterie.soc');
@@ -308,6 +324,10 @@ async function recordCalibration(db, cache, plants, now = new Date()) {
   }
 }
 
+async function clearCalibration(db, plantId) {
+  await dbRun(db, 'DELETE FROM pv_calibration_buckets WHERE plant_id = ?', [plantId]);
+}
+
 module.exports = {
   BUCKET_COUNT,
   bucketForParts,
@@ -317,4 +337,5 @@ module.exports = {
   getFactor,
   effectiveFactor,
   recordCalibration,
+  clearCalibration,
 };

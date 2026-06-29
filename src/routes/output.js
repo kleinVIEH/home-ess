@@ -21,6 +21,7 @@ function enrichOutputs(outputs, valuesById) {
       ...output,
       label: entry ? entry.label : output.sourceId,
       currentDisplay: entry ? entry.display : '—',
+      verification: outputEngine.getStatus(output.id),
     };
   });
 }
@@ -75,7 +76,11 @@ function outputRoutes(db) {
       res.json({
         outputs: outputs.map((output) => {
           const entry = valuesById.get(output.sourceId);
-          return { id: output.id, currentDisplay: entry ? entry.display : '—' };
+          return {
+            id: output.id,
+            currentDisplay: entry ? entry.display : '—',
+            verification: outputEngine.getStatus(output.id),
+          };
         }),
       });
     } catch (err) {

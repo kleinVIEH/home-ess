@@ -11,6 +11,12 @@ const REGISTRY = [
     path: '/pool',
     description: 'Überwachung der Poolanlage: Wassertemperatur, Pumpe, pH-Wert und Chlorgehalt.',
   },
+  {
+    key: 'grid-control',
+    label: 'Grid-Control',
+    path: '/grid-control',
+    description: 'Netz- und Überschusseinspeisungs-Steuerung nach SoC, Batteriespannung und Wechselrichter-Temperaturwarnung.',
+  },
 ];
 
 let _enabledKeys = new Set();

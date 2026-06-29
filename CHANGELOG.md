@@ -3,6 +3,135 @@
 Alle nennenswerten Änderungen an homeESS. Format angelehnt an
 [Keep a Changelog](https://keepachangelog.com/de/1.1.0/).
 
+## [Unveröffentlicht]
+
+### Hinzugefügt
+
+- Neue Kernseite **Prognose** direkt unter Batterie: grafische Energiebilanz für
+  heute + 3 Tage mit Ampel, PV-/Verbrauchsbalken, erwartetem Netzbedarf,
+  Überschuss und Batterie-SoC am Tagesende.
+- Selbstlernendes Verbrauchsmodell aus Jahresmittel, exponentiell gewichtetem
+  Tagesmittel und persönlichem Stundenprofil. Tagesverlauf, Mindest-SoC sowie
+  konfigurierbare Lade-/Entladewirkungsgrade fließen in die Batteriesimulation
+  ein. 38 Werte unter `prognose.*` ergänzen Output und Dashboard-Wertekatalog.
+- Batteriekapazität von der Prognose- auf die Batterieseite verschoben und auf
+  Ah umgestellt. Die Prognose rechnet mit der Nennspannung des Batterietyps in
+  kWh um. Der Wertekatalog enthält zusätzlich unter
+  `batterie.freieKapazitaet` die noch bis 100 % speicherbare Energie,
+  `batterie.nutzbarBisMindestSoc` die bereits nutzbar gespeicherte Energie und
+  `batterie.restzeitBisGrenze` die Restzeit bei momentaner Batterieleistung bis
+  100 % beziehungsweise bis zum Mindest-SoC.
+- Prognoseseite um „Heute autark“ und den Zähler autark beendeter Tage im
+  laufenden Jahr ergänzt. Der Zähler kann mit Startwertabfrage bidirektional an
+  ein optionales MQTT-Topic gekoppelt werden. Beim Jahreswechsel wird der
+  vollständige Stand als „Autarke Tage Vorjahr“ übernommen; dafür steht ein
+  zweites optionales Abgleich-Topic mit identischem Verhalten bereit.
+- Prognose ermittelt nun den SoC beim ersten ab dem Folgetag sichtbaren
+  Ladebeginn (`PV > Verbrauch` bei freier Akkukapazität) inklusive Tag und
+  Uhrzeit. Bei Dunkelflaute wird über weitere Open-Meteo-Tage kumuliert; ein
+  heutiger Ladebeginn beendet das Fenster nicht. Das erste erwartete Erreichen
+  des Mindest-SoC wird ebenfalls mit Tag und Uhrzeit ausgewiesen. Diese Größen
+  bestimmen vorrangig die Ampel und stehen im Wertekatalog.
+- Verbrauchslernen auf sieben getrennte Wochentagskurven erweitert. Vor dem
+  Sampling wird Batterieenergie signiert aus dem abgeleiteten Gesamtverbrauch
+  entfernt (Laden abziehen, Entladen hinzurechnen), damit Akkuladung nicht mehr
+  als Hausverbrauch in die Prognose eingeht. Beim Upgrade wird das bisherige,
+  nicht rückwirkend korrigierbare Lernfenster einmalig sauber neu begonnen.
+- Zwei aktivierbare Prognose-Verhaltensmodelle ergänzt: Netzparallelbetrieb
+  arbeitet mit Netzreserve, Autarkbetrieb reagiert anhand der Mehrtagesprognose
+  deutlich früher und kann dabei auch Level 1 einplanen. Die Prognose verwaltet
+  exklusiv Level 1–5; Grid-Control schaltet nur noch den Notstromzustand. Level 1
+  greift unter Mindest-SoC auch ohne aktives Modell. Level 5 setzt im
+  Autarkbetrieb SoC > 98 % plus Überschuss voraus; im Netzparallelbetrieb gilt
+  die obere Grid-Control-Schwelle beziehungsweise ohne das Modul 90 % als voll.
+  Auswahl und Aktivierung befinden sich oben rechts auf der Prognoseseite.
+- Prognose-Wertekatalog um die bisherigen ioBroker-Kennzahlen ergänzt:
+  dynamischer Tagesdurchschnitt, 24-h-Hochrechnung der letzten Stunde,
+  profilbasierter Verbrauch bis Sonnenaufgang, Gesamtbedarf inklusive
+  Akkufüllung sowie verfügbare, fehlende und freie Energie. „Bedarf gedeckt“
+  bewertet nun den Zeitraum bis zum nächsten prognostizierten Ladebeginn.
+- Batterie-Wertekatalog um die Zustände Charge, Charged today, Discharging,
+  Empty, Full, Good, HalfCharged, High, Overflow und Reserve sowie deren
+  dynamische SoC-Schwellen ergänzt. „Charged today“ bleibt nach SoC > 98 % bis
+  zum lokalen Tageswechsel gesetzt.
+
+- Optionales Modul **Grid-Control** mit ioBroker-konformer MQTT-Steuerung für
+  Netz und Überschusseinspeisung. SoC und Spannung besitzen jeweils getrennte
+  untere/obere Schaltfenster mit lokaler, begrenzter Hysterese; dazwischen ist
+  der jeweilige Grid-Ausgang aus. Temperaturwarnungen, Warnungs-Publishing und
+  die Katalogwerte „Grid by SoC“, „Grid by Voltage“, „Grid by Temperature“ und
+  „Grid actual“ sind enthalten.
+- Batterie-Konfiguration um Mindest-SoC-Topic, 5-%-Regler, Batterietyp,
+  Zellanzahl sowie manuelle Spannungsgrenzen erweitert.
+- Grid-Control um Netzfrequenz-Topic und konfigurierbare Erkennungszeit
+  erweitert. Bleibt die Frequenz nach einer Netzanforderung bei 0, werden
+  Warnung und persistenter Notstromzustand gesetzt; das Netz bleibt bis zur
+  Rückkehr einer Frequenz dauerhaft angefordert. Globales Betriebslevel 1–5
+  inklusive Balkenanzeige in der Titelzeile ergänzt. Alle Batterie- und
+  Grid-Control-Topicfelder zeigen den aktuellen Brokerwert.
+- Netzfrequenz und Wechselrichterlast auf **L1/L2/L3** erweitert: Eine
+  ausgefallene Phase aktiviert Notstrom, verlassen wird er erst bei drei
+  wiederhergestellten Phasen. Lastüberschreitung einer Phase setzt den neuen
+  Katalogwert **Grid by Load**; Rückschaltung erfolgt erst unter allen drei
+  phasenweisen Ausschaltschwellen. Die Statuskachel heißt jetzt „Warnung“.
+- Persistenter globaler Katalogwert **Autark** (`operating.autark`): täglicher
+  Reset auf `true`, sofern Grid-Control nicht wegen Mindest-SoC schaltet;
+  eine Mindest-SoC-Netzschaltung verriegelt ihn bis zum nächsten Tag auf `false`.
+- **Grid-Control-Protokoll** (`grid-control/log.js`, Tabelle `grid_control_log`,
+  begrenzt auf 2000 Einträge): scrollbares Audit-Log unten auf der Seite.
+  Protokolliert werden ausschließlich **Schwellen-Übertritte mit Aktionen**
+  (gelb) und **kritische Zustände** (rot) — je **einzeilig** mit Zeitstempel und
+  dem zugehörigen Werte-Schnappschuss. Paginiert (100/Seite, `/grid-control/log`),
+  **Seite 1 live**, ab Seite 2 statisch.
+- **Geschlossene Regelschleife** in Grid-Control: Schaltbefehle werden gegen die
+  tatsächliche Broker-Rückmeldung verifiziert und bei Abweichung (verlorener
+  Write, externe Änderung, Reconnect) selbstheilend wiederholt; bleibt die
+  Bestätigung aus, wird gewarnt. Bestätigungs-Badges („bestätigt“/„nicht
+  bestätigt!“) und eine Verbindungsanzeige je Befehls-Topic.
+- PV-Anlagen: Button **„Kalibrierung löschen“** im Bearbeiten-Dialog (mit
+  Sicherheitsabfrage) inkl. Route `POST /photovoltaik/plants/:id/clear-calibration`.
+- **MQTT-Draht-Diagnose** über Umgebungsvariable `HOMEESS_MQTT_DEBUG=1`
+  (protokolliert alle ein-/ausgehenden Nachrichten mit Topic, Wert und `ack`).
+
+### Geändert
+
+- Allgemeine Output-Engine auf eine geschlossene, verifizierte Regelschleife
+  umgestellt: aktiver ioBroker-Readback alle 30 Sekunden, erneutes Schreiben bei
+  fehlender oder abweichender Bestätigung, Retry-Begrenzung und sichtbarer Status
+  je Output. Nicht rücklesbare Command-Topics werden nicht mehr als sichere
+  Output-Ziele akzeptiert.
+
+- **PV-Selbstkalibrierung** wirkt jetzt in **beide Richtungen** (`FACTOR_MAX`
+  1,15 → 1,5; `RATIO_MAX` 1,3 → 1,5). Nicht kalibrierte Randzeiten (morgens/abends)
+  **erben rückwärts** den Faktor des letzten kalibrierten Buckets statt auf 1,0
+  zurückzuspringen. Das Kalibrier-Gate nutzt nun den **anlagenspezifischen
+  Sonnenreferenz-Cutoff** (morgens/abends) statt eines globalen 20-%-Werts, sodass
+  z. B. eine Westanlage nur nachmittags und eine Ostanlage nur vormittags
+  kalibriert wird.
+- **MQTT-Schreiben** sendet Befehle an alle konkreten Topic-Kandidaten (Punkt-
+  und Slash-Form), um Notations-Unsicherheiten der `topic2id`-Rückbildung
+  abzudecken. Hinweis: Auf ein Wildcard kann nicht publiziert werden — das
+  Slash-Wildcard hilft nur beim **Lesen**.
+- Werte optionaler Module (Pool, Grid-Control) erscheinen im **Wertekatalog**
+  und in den **MQTT-Abos** nur noch, wenn das jeweilige Modul aktiviert ist.
+
+### Behoben
+
+- Stromverbrauchs-Tageswechsel nutzt jetzt MQTT-Datum beziehungsweise die
+  konfigurierte lokale Zeitzone statt der UTC-Serverzeit; damit erfolgt der
+  Wechsel inklusive Sommerzeit um lokale 00:00 Uhr.
+
+- Grid-Control schaltet das Netz an der **oberen SoC-Grenze** nur noch, wenn
+  **Überschusseinspeisung aktiviert** ist (vorher unbedingt).
+- **Readback-Verfälschung behoben:** eigene `ack:false`-Schreib-Echos auf dem
+  Haupt-Topic werden nicht mehr als Broker-Stand gecacht — nur `ack:true` bzw.
+  Rohwerte gelten als bestätigter Ist-Zustand. Behebt die falsche
+  „bestätigt“-Anzeige, obwohl ioBroker einen anderen Wert hielt.
+- **Notstromerkennung:** überalterte Netzfrequenzen (nach Verbindungsabbruch)
+  entriegeln den Notstrom nicht mehr — Frische-Prüfung der Cache-Werte.
+- **Startup-Race behoben:** optionale Module werden vor dem Laden der
+  State-Definitionen initialisiert, damit `isEnabled()` beim Start korrekt greift.
+
 ## [0.7.0] — 2026-06-28
 
 ### Hinzugefügt

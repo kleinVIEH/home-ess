@@ -6,6 +6,7 @@ const mqttClient = require('../mqtt/client');
 const { buildEnvironmentSnapshot } = require('../mqtt/config');
 const { listPvPlants } = require('../photovoltaik/plants');
 const { assessHeaderSkyState } = require('../photovoltaik/aggregation');
+const operatingState = require('../operating-state');
 
 function renderEvent(name, data) {
   return `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -26,7 +27,7 @@ function liveRoutes(db) {
     }
     const socRaw = cache.get('batterie.soc');
     const batterySoc = socRaw != null ? parseFloat(String(socRaw.value)) : NaN;
-    res.json({ ...snapshot, sky, batterySoc: Number.isFinite(batterySoc) ? batterySoc : null });
+    res.json({ ...snapshot, sky, batterySoc: Number.isFinite(batterySoc) ? batterySoc : null, ...operatingState.getState() });
   });
 
   router.get('/live/events', requireAuth, (req, res) => {

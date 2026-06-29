@@ -25,7 +25,15 @@ const outputRoutes = require('./routes/output');
 const liveRoutes = require('./routes/live');
 const modulesRoutes = require('./routes/modules');
 const poolRoutes = require('./routes/pool');
+const gridControlRoutes = require('./routes/grid-control');
+const prognosisRoutes = require('./routes/prognosis');
 const { initModules } = require('./modules');
+const gridControlAutomation = require('./grid-control/automation');
+const operatingState = require('./operating-state');
+const { recordConsumptionSample } = require('./prognosis/forecast');
+const { readBatterieData } = require('./batterie/config');
+const { buildEnvironmentSnapshot } = require('./mqtt/config');
+const prognosisBehavior = require('./prognosis/behavior');
 
 // Baut die Express-App zusammen: DB öffnen, Middleware, Routen registrieren,
 // MQTT-Verbindung mit gespeicherter Konfiguration starten.
@@ -45,17 +53,24 @@ function createApp() {
   app.use(stromverbrauchRoutes(db));
   app.use(photovoltaikRoutes(db));
   app.use(batterieRoutes(db));
+  app.use(prognosisRoutes(db));
   app.use(settingsRoutes(db));
   app.use(outputRoutes(db));
   app.use(liveRoutes(db));
   app.use(modulesRoutes(db));
   app.use(poolRoutes(db));
+  app.use(gridControlRoutes(db));
 
-  // Optionale Module aus DB laden (muss vor ersten Requests bereitstehen).
-  initModules(db).catch(() => {});
+  const operatingReady = operatingState.init(db).then(() => {
+    operatingState.startMqttSync(db);
+  });
 
-  // Beim Start mit gespeicherter Konfiguration verbinden.
-  loadAllStateDefinitions(db)
+  // Optionale Module und globalen Betriebszustand laden – muss abgeschlossen sein bevor
+  // loadAllStateDefinitions läuft, da isEnabled() sonst noch falsch zurückgibt.
+  initModules(db)
+    .catch(() => {})
+    .then(() => operatingReady)
+    .then(() => loadAllStateDefinitions(db))
     .then((defs) => {
       mqttClient.setStateDefinitions(defs);
       loadMqttConfig(db, (cfg) => {
@@ -70,10 +85,22 @@ function createApp() {
 
   // Output-Engine: schreibt interne Werte bei Aenderung an ihre Ziel-Topics.
   outputEngine.init(db).catch(() => {});
+  operatingReady
+    .then(() => gridControlAutomation.init(db))
+    .catch(() => gridControlAutomation.init(db));
 
-  setInterval(() => {
-    buildStromverbrauchSnapshot(db, mqttClient.getCache()).catch(() => {});
-  }, 60000);
+  const updateConsumption = () => {
+    const cache = mqttClient.getCache();
+    buildStromverbrauchSnapshot(db, cache)
+      .then((snapshot) => recordConsumptionSample(db, snapshot.raw.today.summe, cache, {
+        batteryPower: readBatterieData(cache).power,
+        outdoorTemperature: buildEnvironmentSnapshot(cache).temperature.value,
+      }))
+      .then(() => prognosisBehavior.runNow(db))
+      .catch(() => {});
+  };
+  updateConsumption();
+  setInterval(updateConsumption, 60000);
   setInterval(() => {
     listPvPlants(db)
       .then((plants) => touchPhotovoltaikAggregation(db, mqttClient.getCache(), plants))

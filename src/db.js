@@ -162,7 +162,98 @@ function openDatabase() {
         soc_topic TEXT NOT NULL DEFAULT '',
         power_topic TEXT NOT NULL DEFAULT '',
         voltage_topic TEXT NOT NULL DEFAULT '',
-        temperatur_topic TEXT NOT NULL DEFAULT ''
+        temperatur_topic TEXT NOT NULL DEFAULT '',
+        min_soc_topic TEXT NOT NULL DEFAULT '',
+        min_soc INTEGER NOT NULL DEFAULT 20,
+        capacity_ah REAL NOT NULL DEFAULT 200,
+        battery_type TEXT NOT NULL DEFAULT 'lifepo4',
+        cell_count INTEGER NOT NULL DEFAULT 16,
+        lower_voltage REAL NOT NULL DEFAULT 44.8,
+        upper_voltage REAL NOT NULL DEFAULT 55.2
+      )`
+    );
+    db.run(
+      `CREATE TABLE IF NOT EXISTS battery_daily_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        day_key TEXT NOT NULL DEFAULT '',
+        charged_today INTEGER NOT NULL DEFAULT 0
+      )`
+    );
+    db.run(
+      `CREATE TABLE IF NOT EXISTS prognosis_config (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        charge_efficiency REAL NOT NULL DEFAULT 95,
+        discharge_efficiency REAL NOT NULL DEFAULT 95,
+        history_days INTEGER NOT NULL DEFAULT 28,
+        behavior_model TEXT NOT NULL DEFAULT 'grid_parallel',
+        behavior_active INTEGER NOT NULL DEFAULT 0
+      )`
+    );
+    db.run(
+      `CREATE TABLE IF NOT EXISTS prognosis_daily_consumption (
+        day_key TEXT PRIMARY KEY,
+        consumption_kwh REAL NOT NULL DEFAULT 0,
+        raw_consumption_kwh REAL NOT NULL DEFAULT 0,
+        max_temperature REAL,
+        completed INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL
+      )`
+    );
+    db.run(
+      `CREATE TABLE IF NOT EXISTS prognosis_hourly_consumption (
+        day_key TEXT NOT NULL,
+        hour INTEGER NOT NULL,
+        consumption_kwh REAL NOT NULL DEFAULT 0,
+        PRIMARY KEY (day_key, hour)
+      )`
+    );
+    db.run(
+      'CREATE INDEX IF NOT EXISTS idx_prognosis_daily_completed ON prognosis_daily_consumption (completed, day_key)'
+    );
+    db.run(
+      `CREATE TABLE IF NOT EXISTS grid_control_config (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        grid_command_topic TEXT NOT NULL DEFAULT '',
+        feed_in_command_topic TEXT NOT NULL DEFAULT '',
+        temperature_warning_topic TEXT NOT NULL DEFAULT '',
+        temperature_warning_value TEXT NOT NULL DEFAULT '1',
+        warning_text_topic TEXT NOT NULL DEFAULT '',
+        warning_active_topic TEXT NOT NULL DEFAULT '',
+        soc_enabled INTEGER NOT NULL DEFAULT 0,
+        voltage_enabled INTEGER NOT NULL DEFAULT 0,
+        temperature_enabled INTEGER NOT NULL DEFAULT 0,
+        feed_in_allowed INTEGER NOT NULL DEFAULT 0,
+        soc_lower_offset INTEGER NOT NULL DEFAULT 0,
+        soc_upper_offset INTEGER NOT NULL DEFAULT 5,
+        soc_hysteresis INTEGER NOT NULL DEFAULT 2,
+        voltage_hysteresis REAL NOT NULL DEFAULT 0.5,
+        grid_frequency_l1_topic TEXT NOT NULL DEFAULT '',
+        grid_frequency_l2_topic TEXT NOT NULL DEFAULT '',
+        grid_frequency_l3_topic TEXT NOT NULL DEFAULT '',
+        grid_detection_seconds INTEGER NOT NULL DEFAULT 30,
+        load_enabled INTEGER NOT NULL DEFAULT 0,
+        load_on_l1 REAL,
+        load_on_l2 REAL,
+        load_on_l3 REAL,
+        load_off_l1 REAL,
+        load_off_l2 REAL,
+        load_off_l3 REAL
+      )`
+    );
+    db.run(
+      `CREATE TABLE IF NOT EXISTS operating_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        operating_level INTEGER NOT NULL DEFAULT 2,
+        emergency_mode INTEGER NOT NULL DEFAULT 0,
+        autark INTEGER NOT NULL DEFAULT 1,
+        autark_day_key TEXT NOT NULL DEFAULT '',
+        autark_days_count INTEGER NOT NULL DEFAULT 0,
+        autark_days_year TEXT NOT NULL DEFAULT '',
+        autark_counted_day_key TEXT NOT NULL DEFAULT '',
+        autark_days_topic TEXT NOT NULL DEFAULT '',
+        autark_days_previous_year_count INTEGER NOT NULL DEFAULT 0,
+        autark_days_previous_year TEXT NOT NULL DEFAULT '',
+        autark_days_previous_year_topic TEXT NOT NULL DEFAULT ''
       )`
     );
     db.run(
@@ -215,11 +306,61 @@ function openDatabase() {
     migratePvCalibrationBuckets(db);
     migratePlaintextPassword(db);
     seedBatterieConfig(db);
+    migrateBatterieConfig(db);
+    seedPrognosisConfig(db);
+    migratePrognosisDailyConsumption(db);
+    migratePrognosisConfig(db);
+    seedGridControlConfig(db);
+    migrateGridControlConfig(db);
+    seedOperatingState(db);
     seedPoolConfig(db);
     migratePoolConfig(db);
   });
 
   return db;
+}
+
+function seedPrognosisConfig(db) {
+  db.run(
+    `INSERT OR IGNORE INTO prognosis_config
+      (id, charge_efficiency, discharge_efficiency, history_days)
+     VALUES (1, 95, 95, 28)`
+  );
+}
+
+function migratePrognosisDailyConsumption(db) {
+  db.all('PRAGMA table_info(prognosis_daily_consumption)', (err, rows) => {
+    if (err || !Array.isArray(rows) || rows.length === 0) return;
+    const existing = new Set(rows.map((row) => row.name));
+    if (!existing.has('raw_consumption_kwh')) {
+      db.run(
+        'ALTER TABLE prognosis_daily_consumption ADD COLUMN raw_consumption_kwh REAL NOT NULL DEFAULT 0',
+        // Frühere Samples enthalten nicht rekonstruierbare Batterieenergie.
+        // Ein sauberer Neustart des Lernfensters ist genauer als Altwerte unter
+        // falscher Bedeutung in die neuen Wochentagskurven zu übernehmen.
+        () => db.run(
+          'DELETE FROM prognosis_hourly_consumption',
+          () => db.run('DELETE FROM prognosis_daily_consumption')
+        )
+      );
+    }
+    if (!existing.has('max_temperature')) {
+      db.run('ALTER TABLE prognosis_daily_consumption ADD COLUMN max_temperature REAL');
+    }
+  });
+}
+
+function migratePrognosisConfig(db) {
+  db.all('PRAGMA table_info(prognosis_config)', (err, rows) => {
+    if (err || !Array.isArray(rows) || rows.length === 0) return;
+    const existing = new Set(rows.map((row) => row.name));
+    if (!existing.has('behavior_model')) {
+      db.run("ALTER TABLE prognosis_config ADD COLUMN behavior_model TEXT NOT NULL DEFAULT 'grid_parallel'");
+    }
+    if (!existing.has('behavior_active')) {
+      db.run('ALTER TABLE prognosis_config ADD COLUMN behavior_active INTEGER NOT NULL DEFAULT 0');
+    }
+  });
 }
 
 function seedUser(db) {
@@ -453,6 +594,96 @@ function seedBatterieConfig(db) {
          VALUES (1, '', '', '', '')`
       );
     }
+  });
+}
+
+function migrateBatterieConfig(db) {
+  db.all('PRAGMA table_info(batterie_config)', (err, rows) => {
+    if (err || !Array.isArray(rows) || rows.length === 0) return;
+    const existing = new Set(rows.map((row) => row.name));
+    const additions = [
+      { name: 'min_soc_topic', sql: "ALTER TABLE batterie_config ADD COLUMN min_soc_topic TEXT NOT NULL DEFAULT ''" },
+      { name: 'min_soc', sql: 'ALTER TABLE batterie_config ADD COLUMN min_soc INTEGER NOT NULL DEFAULT 20' },
+      { name: 'capacity_ah', sql: 'ALTER TABLE batterie_config ADD COLUMN capacity_ah REAL NOT NULL DEFAULT 200' },
+      { name: 'battery_type', sql: "ALTER TABLE batterie_config ADD COLUMN battery_type TEXT NOT NULL DEFAULT 'lifepo4'" },
+      { name: 'cell_count', sql: 'ALTER TABLE batterie_config ADD COLUMN cell_count INTEGER NOT NULL DEFAULT 16' },
+      { name: 'lower_voltage', sql: 'ALTER TABLE batterie_config ADD COLUMN lower_voltage REAL NOT NULL DEFAULT 44.8' },
+      { name: 'upper_voltage', sql: 'ALTER TABLE batterie_config ADD COLUMN upper_voltage REAL NOT NULL DEFAULT 55.2' },
+    ];
+    for (const addition of additions) {
+      if (!existing.has(addition.name)) {
+        db.run(addition.sql, () => {
+          if (addition.name === 'capacity_ah') {
+            // Frühere Prognose-Konfiguration war in kWh. Beim einmaligen Upgrade
+            // auf Ah anhand der Nennspannung verlustarm übernehmen.
+            db.run(
+              `UPDATE batterie_config
+                  SET capacity_ah = COALESCE(
+                    (SELECT battery_capacity_kwh FROM prognosis_config WHERE id = 1) * 1000 /
+                    CASE battery_type
+                      WHEN 'lifepo4' THEN cell_count * 3.2
+                      WHEN 'liion' THEN cell_count * 3.7
+                      WHEN 'leadacid' THEN cell_count * 2.0
+                      ELSE (lower_voltage + upper_voltage) / 2
+                    END,
+                    capacity_ah
+                  )
+                WHERE id = 1`
+            );
+          }
+        });
+      }
+    }
+  });
+}
+
+function seedGridControlConfig(db) {
+  db.get('SELECT COUNT(*) AS cnt FROM grid_control_config', (err, row) => {
+    if (!err && row && row.cnt === 0) {
+      db.run('INSERT INTO grid_control_config (id) VALUES (1)');
+    }
+  });
+}
+
+function migrateGridControlConfig(db) {
+  db.all('PRAGMA table_info(grid_control_config)', (err, rows) => {
+    if (err || !Array.isArray(rows) || rows.length === 0) return;
+    const existing = new Set(rows.map((row) => row.name));
+    const additions = [
+      { name: 'soc_hysteresis', sql: 'ALTER TABLE grid_control_config ADD COLUMN soc_hysteresis INTEGER NOT NULL DEFAULT 2' },
+      { name: 'voltage_hysteresis', sql: 'ALTER TABLE grid_control_config ADD COLUMN voltage_hysteresis REAL NOT NULL DEFAULT 0.5' },
+      { name: 'grid_frequency_l1_topic', sql: "ALTER TABLE grid_control_config ADD COLUMN grid_frequency_l1_topic TEXT NOT NULL DEFAULT ''" },
+      { name: 'grid_frequency_l2_topic', sql: "ALTER TABLE grid_control_config ADD COLUMN grid_frequency_l2_topic TEXT NOT NULL DEFAULT ''" },
+      { name: 'grid_frequency_l3_topic', sql: "ALTER TABLE grid_control_config ADD COLUMN grid_frequency_l3_topic TEXT NOT NULL DEFAULT ''" },
+      { name: 'grid_detection_seconds', sql: 'ALTER TABLE grid_control_config ADD COLUMN grid_detection_seconds INTEGER NOT NULL DEFAULT 30' },
+      { name: 'load_enabled', sql: 'ALTER TABLE grid_control_config ADD COLUMN load_enabled INTEGER NOT NULL DEFAULT 0' },
+      { name: 'load_on_l1', sql: 'ALTER TABLE grid_control_config ADD COLUMN load_on_l1 REAL' },
+      { name: 'load_on_l2', sql: 'ALTER TABLE grid_control_config ADD COLUMN load_on_l2 REAL' },
+      { name: 'load_on_l3', sql: 'ALTER TABLE grid_control_config ADD COLUMN load_on_l3 REAL' },
+      { name: 'load_off_l1', sql: 'ALTER TABLE grid_control_config ADD COLUMN load_off_l1 REAL' },
+      { name: 'load_off_l2', sql: 'ALTER TABLE grid_control_config ADD COLUMN load_off_l2 REAL' },
+      { name: 'load_off_l3', sql: 'ALTER TABLE grid_control_config ADD COLUMN load_off_l3 REAL' },
+    ];
+    const pending = additions.filter((addition) => !existing.has(addition.name));
+    const addNext = (index) => {
+      if (index < pending.length) {
+        db.run(pending[index].sql, () => addNext(index + 1));
+        return;
+      }
+      if (existing.has('grid_frequency_topic')) {
+        db.run(
+          "UPDATE grid_control_config SET grid_frequency_l1_topic = grid_frequency_topic WHERE grid_frequency_l1_topic = '' AND grid_frequency_topic <> ''",
+          () => {}
+        );
+      }
+    };
+    addNext(0);
+  });
+}
+
+function seedOperatingState(db) {
+  db.get('SELECT COUNT(*) AS cnt FROM operating_state', (err, row) => {
+    if (!err && row && row.cnt === 0) db.run('INSERT INTO operating_state (id) VALUES (1)');
   });
 }
 

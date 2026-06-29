@@ -2,9 +2,11 @@
 
 const { renderLayout } = require('./layout');
 const { escapeHtml, statusText } = require('./components');
+const { BATTERY_PRESETS } = require('../batterie/config');
+function brokerValue(id, value) { return `<span class="topic-current">Broker: <strong id="${id}">${escapeHtml(value == null ? '—' : value)}</strong></span>`; }
 
 function renderBatterie({
-  config = { socTopic: '', powerTopic: '', voltageTopic: '', temperaturTopic: '' },
+  config = { socTopic: '', powerTopic: '', voltageTopic: '', temperaturTopic: '', minSocTopic: '', minSoc: 20, capacityAh: 200, batteryType: 'lifepo4', cellCount: 16, lowerVoltage: 44.8, upperVoltage: 55.2 },
   data = { soc: null, power: null, voltage: null, temperatur: null },
   message = '',
   error = '',
@@ -72,7 +74,7 @@ function renderBatterie({
         </div>` : ''}
         ` : '<div class="info-card"><p class="muted">Noch keine MQTT-Topics konfiguriert.</p></div>'}
 
-        <form action="/batterie/topics" method="POST">
+        <form action="/batterie/topics" method="POST" class="settings-form">
           <div class="settings-card">
             <div class="settings-card-head">
               <h2>MQTT-Topics</h2>
@@ -84,24 +86,75 @@ function renderBatterie({
                 <input type="text" id="socTopic" name="socTopic"
                        placeholder="z.B. battery.0.soc"
                        value="${escapeHtml(config.socTopic)}">
+                ${brokerValue('broker-battery-soc', data.soc)}
               </div>
               <div class="field">
                 <label for="powerTopic">Leistung – Topic (W, positiv = laden)</label>
                 <input type="text" id="powerTopic" name="powerTopic"
                        placeholder="z.B. battery.0.power"
                        value="${escapeHtml(config.powerTopic)}">
+                ${brokerValue('broker-battery-power', data.power)}
               </div>
               <div class="field">
                 <label for="voltageTopic">Spannung – Topic (V)</label>
                 <input type="text" id="voltageTopic" name="voltageTopic"
                        placeholder="z.B. battery.0.voltage"
                        value="${escapeHtml(config.voltageTopic)}">
+                ${brokerValue('broker-battery-voltage', data.voltage)}
               </div>
               <div class="field">
                 <label for="temperaturTopic">Temperatur – Topic (°C)</label>
                 <input type="text" id="temperaturTopic" name="temperaturTopic"
                        placeholder="z.B. battery.0.temperature"
                        value="${escapeHtml(config.temperaturTopic)}">
+                ${brokerValue('broker-battery-temperature', data.temperatur)}
+              </div>
+              <div class="field">
+                <label for="minSocTopic">Mindest-Ladezustand – Ziel-Topic (%)</label>
+                <input type="text" id="minSocTopic" name="minSocTopic"
+                       placeholder="z.B. battery.0.minimumSoc"
+                       value="${escapeHtml(config.minSocTopic)}">
+                ${brokerValue('broker-battery-min-soc', data.minSoc)}
+              </div>
+            </div>
+          </div>
+          <div class="settings-card">
+            <div class="settings-card-head">
+              <h2>Mindest-Ladezustand</h2>
+              <p class="settings-card-hint">Wird in 5-%-Schritten gespeichert und an das konfigurierte Ziel-Topic gesendet.</p>
+            </div>
+            <div class="range-field">
+              <input type="range" id="minSoc" name="minSoc" min="0" max="100" step="5" value="${escapeHtml(config.minSoc)}">
+              <output id="minSocValue" for="minSoc">${escapeHtml(config.minSoc)} %</output>
+            </div>
+          </div>
+          <div class="settings-card">
+            <div class="settings-card-head">
+              <h2>Batterieparameter</h2>
+              <p class="settings-card-hint">Der Batterietyp setzt Vorschläge pro Zelle. Untere und obere Gesamtspannung können jederzeit manuell angepasst werden.</p>
+            </div>
+            <div class="field-grid">
+              <div class="field">
+                <label for="capacityAh">Batteriekapazität (Ah)</label>
+                <input type="number" id="capacityAh" name="capacityAh" min="0.1" max="100000" step="0.1" value="${escapeHtml(config.capacityAh)}">
+              </div>
+              <div class="field">
+                <label for="batteryType">Batterietyp</label>
+                <select id="batteryType" name="batteryType">
+                  ${Object.entries(BATTERY_PRESETS).map(([key, preset]) => `<option value="${key}"${config.batteryType === key ? ' selected' : ''}>${escapeHtml(preset.label)}</option>`).join('')}
+                </select>
+              </div>
+              <div class="field">
+                <label for="cellCount">Anzahl Zellen</label>
+                <input type="number" id="cellCount" name="cellCount" min="1" max="100" step="1" value="${escapeHtml(config.cellCount)}">
+              </div>
+              <div class="field">
+                <label for="lowerVoltage">Untere Batteriespannung (V)</label>
+                <input type="number" id="lowerVoltage" name="lowerVoltage" min="0.1" step="0.1" value="${escapeHtml(config.lowerVoltage)}">
+              </div>
+              <div class="field">
+                <label for="upperVoltage">Obere Batteriespannung (V)</label>
+                <input type="number" id="upperVoltage" name="upperVoltage" min="0.1" step="0.1" value="${escapeHtml(config.upperVoltage)}">
               </div>
             </div>
           </div>
@@ -114,6 +167,23 @@ function renderBatterie({
     var BAT_CHARGING_COLOR    = '#27ae60';
     var BAT_DISCHARGING_COLOR = '#e67e22';
     var BAT_STANDBY_COLOR     = '#6b7280';
+    var batteryPresets = ${JSON.stringify(BATTERY_PRESETS)};
+
+    var minSocSlider = document.getElementById('minSoc');
+    var minSocValue = document.getElementById('minSocValue');
+    if (minSocSlider) minSocSlider.addEventListener('input', function () {
+      minSocValue.textContent = minSocSlider.value + ' %';
+    });
+    function applyBatteryPreset() {
+      var type = document.getElementById('batteryType').value;
+      var cells = parseInt(document.getElementById('cellCount').value, 10);
+      var preset = batteryPresets[type];
+      if (!preset || preset.lowerPerCell == null || !isFinite(cells)) return;
+      document.getElementById('lowerVoltage').value = (preset.lowerPerCell * cells).toFixed(1);
+      document.getElementById('upperVoltage').value = (preset.upperPerCell * cells).toFixed(1);
+    }
+    document.getElementById('batteryType').addEventListener('change', applyBatteryPreset);
+    document.getElementById('cellCount').addEventListener('change', applyBatteryPreset);
 
     function socBarColor(pct) {
       if (pct < 20) return '#e74c3c';
@@ -135,6 +205,16 @@ function renderBatterie({
         .then(function(r) { return r.ok ? r.json() : null; })
         .then(function(d) {
           if (!d) return;
+
+          var brokerMap = {
+            'broker-battery-soc': 'soc', 'broker-battery-power': 'power',
+            'broker-battery-voltage': 'voltage', 'broker-battery-temperature': 'temperatur',
+            'broker-battery-min-soc': 'minSoc'
+          };
+          Object.keys(brokerMap).forEach(function(id) {
+            var value = d[brokerMap[id]];
+            document.getElementById(id).textContent = value == null ? '—' : String(value);
+          });
 
           var socEl   = document.getElementById('kpi-soc');
           var barEl   = document.getElementById('soc-bar');

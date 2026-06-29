@@ -11,6 +11,7 @@ const NAV_CORE = [
   { path: '/stromverbrauch', label: 'Stromverbrauch', section: 'main' },
   { path: '/photovoltaik', label: 'Photovoltaik', section: 'main' },
   { path: '/batterie', label: 'Batterie', section: 'main' },
+  { path: '/prognose', label: 'Prognose', section: 'main' },
   { path: '/output', label: 'Output', section: 'main' },
   { path: '/module', label: 'Module', section: 'footer' },
   { path: '/settings', label: 'Einstellungen', section: 'footer' },
@@ -55,6 +56,17 @@ function renderLiveScript() {
           batNode.classList.add('bat-visible');
         }
 
+        var levelNode = document.getElementById('header-operating-level');
+        if (levelNode && data.operatingLevel != null) {
+          var level = Math.min(5, Math.max(1, Number(data.operatingLevel) || 1));
+          levelNode.setAttribute('data-level', String(level));
+          levelNode.title = 'Betriebslevel ' + level + (data.emergencyMode ? ' · Notstrombetrieb / kein Netz' : '');
+          levelNode.classList.toggle('operating-level--emergency', !!data.emergencyMode);
+          Array.prototype.forEach.call(levelNode.querySelectorAll('.operating-level-bar'), function (bar) {
+            bar.classList.toggle('is-active', Number(bar.getAttribute('data-level')) <= level);
+          });
+        }
+
         var skyNode = document.getElementById('header-sky');
         if (skyNode && data.sky) {
           if (data.sky === 'sun') {
@@ -88,6 +100,7 @@ function renderLiveScript() {
       }
 
       refreshHeaderData();
+      window.setInterval(refreshHeaderData, 10000);
       if (!window.EventSource) return;
       source = new EventSource('/live/events');
       source.addEventListener('mqtt', function (event) {
@@ -137,6 +150,13 @@ function renderLayout({ title, activePath = '', body = '', script = '' } = {}) {
         <span class="header-battery" id="header-battery" title="Batterie Ladezustand">
           <span class="bat-body"><span class="bat-fill" id="bat-fill"></span></span><span class="bat-cap"></span>
           <span class="bat-pct" id="bat-pct"></span>
+        </span>
+        <span class="header-operating-level" id="header-operating-level" data-level="2" title="Betriebslevel 2">
+          <span class="operating-level-bar operating-level-bar--5" data-level="5"></span>
+          <span class="operating-level-bar operating-level-bar--4" data-level="4"></span>
+          <span class="operating-level-bar operating-level-bar--3" data-level="3"></span>
+          <span class="operating-level-bar operating-level-bar--2 is-active" data-level="2"></span>
+          <span class="operating-level-bar operating-level-bar--1 is-active" data-level="1"></span>
         </span>
         <span class="header-sky" id="header-sky" title="Himmelszustand">🌙</span>
       </div>

@@ -20,6 +20,8 @@ const {
   readPhotovoltaikValues,
   getConsumerSidePvCurrentTotal,
 } = require('../photovoltaik/aggregation');
+const { loadMqttConfig } = require('../mqtt/config');
+const { localCalendar } = require('../local-time');
 
 const IMPORT_COUNTER_KEYS = [
   { id: NETZBEZUG_ZAEHLER_L1_STATE_ID, key: 'import_l1' },
@@ -57,27 +59,6 @@ function parseNumber(value) {
   if (!normalized) return null;
   const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : null;
-}
-
-function pad(value) {
-  return String(value).padStart(2, '0');
-}
-
-function getDateKey(date = new Date()) {
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
-}
-
-function getWeekKey(date = new Date()) {
-  const local = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-  const day = local.getDay() || 7;
-  local.setDate(local.getDate() + 4 - day);
-  const yearStart = new Date(local.getFullYear(), 0, 1);
-  const week = Math.ceil((((local - yearStart) / 86400000) + 1) / 7);
-  return `${local.getFullYear()}-W${pad(week)}`;
-}
-
-function getYearKey(date = new Date()) {
-  return String(date.getFullYear());
 }
 
 function getCacheValue(cache, key) {
@@ -234,8 +215,8 @@ async function saveCounterState(db, key, state) {
   );
 }
 
-async function updateCounterStates(db, cache, now = new Date()) {
-  const dayKey = getDateKey(now);
+async function updateCounterStates(db, cache, calendar) {
+  const dayKey = calendar.dateKey;
   const existing = await loadCounterStates(db);
   const previousDayTotals = { import: 0, export: 0 };
   const dayTotals = { import: 0, export: 0 };
@@ -276,10 +257,9 @@ async function updateCounterStates(db, cache, now = new Date()) {
   return { previousDayTotals, dayTotals, rawValues, dayKey };
 }
 
-async function updateSummaryState(db, previousDayTotals, dayKey, now = new Date()) {
+async function updateSummaryState(db, previousDayTotals, calendar) {
   const state = await loadSummaryState(db);
-  const weekKey = getWeekKey(now);
-  const yearKey = getYearKey(now);
+  const { dateKey: dayKey, weekKey, yearKey } = calendar;
   let changed = false;
 
   if (!state.lastRolloverDate) {
@@ -318,10 +298,11 @@ async function updateSummaryState(db, previousDayTotals, dayKey, now = new Date(
 
 async function setManualOffset(db, period, values, now = new Date()) {
   const state = await loadSummaryState(db);
-  const dayKey = getDateKey(now);
-  state.lastRolloverDate = dayKey;
-  state.weekKey = getWeekKey(now);
-  state.yearKey = getYearKey(now);
+  const mqttConfig = await new Promise((resolve) => loadMqttConfig(db, resolve));
+  const calendar = localCalendar(null, mqttConfig.timezone, now);
+  state.lastRolloverDate = calendar.dateKey;
+  state.weekKey = calendar.weekKey;
+  state.yearKey = calendar.yearKey;
 
   if (period === 'week') {
     state.weekImportOffset = values.netzbezug;
@@ -338,6 +319,8 @@ async function setManualOffset(db, period, values, now = new Date()) {
 }
 
 async function buildStromverbrauchSnapshot(db, cache) {
+  const mqttConfig = await new Promise((resolve) => loadMqttConfig(db, resolve));
+  const calendar = localCalendar(cache, mqttConfig.timezone);
   const eigenverbrauchMeterValue = sumCacheValues(cache, [
     EIGENVERBRAUCH_L1_STATE_ID,
     EIGENVERBRAUCH_L2_STATE_ID,
@@ -356,13 +339,13 @@ async function buildStromverbrauchSnapshot(db, cache) {
       ? null
       : (eigenverbrauchMeterValue || 0) + (consumerSidePvValue || 0);
 
-  const counterUpdate = await updateCounterStates(db, cache);
+  const counterUpdate = await updateCounterStates(db, cache, calendar);
   const todayImport = counterUpdate.dayTotals.import || 0;
   const todayExport = counterUpdate.dayTotals.export || 0;
   const summaryState = await updateSummaryState(
     db,
     counterUpdate.previousDayTotals,
-    counterUpdate.dayKey
+    calendar
   );
 
   const weekImport = summaryState.weekImportOffset + todayImport;

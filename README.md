@@ -34,8 +34,11 @@ Bedienung über ein Web-Dashboard mit vorgeschaltetem Login.
   - **Selbstkalibrierung** (je Anlage aktivierbar): tageszeit-abhängiger
     Kalibrierfaktor je **15-Minuten-Fenster**, der den gemessenen Schnitt der
     letzten 15 Minuten mit der von Open-Meteo gelieferten Strahlung desselben
-    Fensters vergleicht und sich sanft nachzieht — erkennt u. a. Verschattungen und
-    fließt in Idealwert und Prognose ein.
+    Fensters vergleicht und sich sanft nachzieht (in **beide Richtungen**) — erkennt
+    u. a. Verschattungen und fließt in Idealwert und Prognose ein. Kalibriert wird
+    je Anlage nur bei brauchbarem Sonnenstand (Sonnenreferenz-Cutoff morgens/abends);
+    Randzeiten erben den nächstgelegenen Faktor. **„Kalibrierung löschen"** im
+    Bearbeiten-Dialog setzt eine Anlage zurück.
 - 🔋 **Batterie** — Das zentrale Element der Plattform.
   - Konfigurierbare MQTT-Topics für SoC, Leistung, Spannung, Temperatur.
   - KPI-Kacheln (nur wenn Topic konfiguriert), SoC-Balken mit Farbwechsel
@@ -44,6 +47,55 @@ Bedienung über ein Web-Dashboard mit vorgeschaltetem Login.
   - **Batterie-Ladeanzeige in der Titelzeile**: Icon in Batterieform mit
     Füllstand und Prozentzahl, erscheint automatisch sobald SoC-Daten
     vorliegen, live aktualisiert via SSE.
+  - Mindest-SoC mit MQTT-Ziel-Topic und 5-%-Schieberegler sowie Batterietyp,
+    Zellzahl, Kapazität in Ah und manuell anpassbaren unteren/oberen Spannungsgrenzen.
+- 📈 **Prognose** — Energiebilanz für heute plus drei Tage direkt unterhalb der
+  Batterie im Menü. Kombiniert PV-Wetterprognose, nutzbare Batterieladung und ein
+  selbstlernendes Verbrauchsmodell (Jahresmittel, gewichteter 28-Tage-Mittelwert,
+  persönliches Stundenprofil und Tageskalibrierung). Netzbedarf, Überschuss,
+  Batterie-Endstand, heutiger Autark-Status und die autarken Tage des laufenden
+  Jahres stehen auch im Wertekatalog bereit. Der Jahreszähler kann bidirektional
+  mit einem optionalen MQTT-Topic abgeglichen werden. Beim Jahreswechsel wird er
+  nach „Autarke Tage Vorjahr“ übernommen; auch dieser Stand besitzt optional ein
+  eigenes bidirektionales Abgleich-Topic.
+  Die Versorgungsampel bewertet vorrangig den prognostizierten SoC beim ersten
+  ab dem Folgetag sichtbaren Ladebeginn. Bei Dunkelflaute wird über weitere
+  Open-Meteo-Prognosetage kumuliert. Ein erwartetes Erreichen des Mindest-SoC
+  wird mit Tag und Uhrzeit ausgewiesen; Tagesend-SoC bleibt als Zusatzwert sichtbar.
+  Für jeden Wochentag wird eine eigene Verbrauchskurve gelernt. Da der aus
+  Netzbezug und PV abgeleitete Gesamtverbrauch auch Akkuladung enthält, wird die
+  signierte Batterieleistung vor dem Lernen herausgerechnet.
+  Oben rechts lässt sich ein Verhaltensmodell aktivieren: **Netzparallelbetrieb**
+  nutzt das Netz als Reserve; **Autarkbetrieb** bewertet mehrere Prognosetage
+  und reduziert Verbraucher deutlich früher. Die Prognose verwaltet alle
+  Betriebslevel 1–5; Level 1 greift bei unterschrittenem Mindest-SoC auch ohne
+  aktiviertes Verhaltensmodell. Im Autarkbetrieb gilt der Akku erst über 98 %
+  als voll und Überschuss aktiviert dann Level 5. Im Netzparallelbetrieb stammt
+  die Voll-Schwelle aus der oberen Grid-Control-SoC-Schwelle, bei deaktiviertem
+  Grid-Control werden 90 % verwendet.
+- 🔌 **Grid-Control** (optionales Modul): schaltet Netz und optional
+  Überschusseinspeisung nach getrennten unteren/oberen SoC- und
+  Spannungsfenstern mit kleiner lokaler Hysterese sowie nach einer
+  Wechselrichter-Temperaturwarnung. Schutzwarnungen und fünf Grid-Zustände sind
+  per MQTT/Output-Katalog verfügbar. Eine dreiphasige, konfigurierbare
+  Netzfrequenz-Überwachung verriegelt bereits beim Ausfall einer Phase den
+  **Notstrombetrieb**, bis auf allen drei Phasen wieder Frequenz erkannt wird.
+  Grid-Control schaltet nur diesen Notstromzustand ein und aus und verändert
+  selbst kein Betriebslevel. Das globale
+  Betriebslevel 1–5 erscheint als rot-grüne Balkenanzeige in der Titelzeile.
+  Eine dreiphasige Wechselrichterlast-Hysterese nutzt die vorhandenen
+  Eigenverbrauchsleistungen L1–L3, schaltet bei Überlast einer Phase zu und
+  erst unter allen drei Rückschaltschwellen wieder ab.
+  Der globale Katalogwert **Autark** startet jeden Tag auf `true`, sofern keine
+  Mindest-SoC-Netzschaltung aktiv ist, und bleibt nach einer solchen Schaltung
+  für den restlichen Tag auf `false`. Die obere SoC-Grenze schaltet das Netz nur
+  zu, wenn **Überschusseinspeisung aktiviert** ist.
+  - **Verifizierte Schaltung:** Jeder Schaltbefehl wird gegen die tatsächliche
+    Broker-Rückmeldung geprüft und bei Abweichung selbstheilend wiederholt; je
+    Befehls-Topic ein Badge „bestätigt"/„nicht bestätigt!" plus Verbindungsanzeige.
+  - **Protokoll:** scrollbares Audit-Log unten — nur Schwellen-Übertritte mit
+    Aktionen (gelb) und kritische Zustände (rot), einzeilig mit Zeitstempel und
+    Werten; paginiert, Seite 1 live, ab Seite 2 statisch.
 - 🏊 **Poolsteuerung** (optionales Modul, aktivierbar unter `/module`):
   - Solarpumpe und Filterpumpe mit je Status-/Steuerungs-Topic und Priorität.
   - **Drei Modus-Buttons** je Pumpe: An / Aus / Automatik.
@@ -56,7 +108,9 @@ Bedienung über ein Web-Dashboard mit vorgeschaltetem Login.
     (liest Batterie-SoC aus dem zentralen Cache).
   - KPI-Kacheln für Wassertemperatur, Pumpen, pH, Chlor (je nach Konfiguration).
 - 📤 **Output** — beliebige berechnete Werte an ioBroker-Ziel-Topics zurückgeben;
-  Übergabe automatisch bei Wertänderung (Publish gemäß [MQTT.md](MQTT.md)).
+  geschlossene Regelschleife mit aktivem Readback alle 30 Sekunden. Fehlende oder
+  abweichende Bestätigungen werden erneut geschrieben und je Output angezeigt.
+  Nicht rücklesbare Command-Topics sind als Ziel bewusst ausgeschlossen.
 - 🧩 **Module** — Verwaltungsseite zum Aktivieren/Deaktivieren optionaler Module;
   aktive Module erscheinen automatisch in der Sidebar.
 - 🌤️ **Sonnenintensität** (% des Clear-Sky-Ideals, auf 100 % gedeckelt):
@@ -144,7 +198,10 @@ src/
                    Prognose (forecast.js), Selbstkalibrierung (calibration.js)
   wetter/          Open-Meteo-Abruf (Strahlungsprognose) + In-Memory-Cache
   batterie/        Topic-Konfiguration + State-Definitionen + Cache-Reader
+  prognosis/       Verbrauchslernen, Batterie-Simulation + Modellkonfiguration
   pool/            Pool-Config + Pump-Automation (solar/filter)
+  grid-control/    Schaltlogik + verifizierte Regelschleife + Audit-Log (optional)
+  operating-state.js  Globaler Zustand (Betriebslevel, Notstrom, Autark-Latch)
   output/          Wert-Katalog (PV, Prognose, Strom, Batterie, Pool, Sonne),
                    Output-CRUD, Publish-Engine
   dashboard/       Widget- und Gruppen-CRUD
@@ -160,9 +217,10 @@ SQLite unter `data/app.db` (gitignored). Wichtige Tabellen:
 `stromverbrauch_config`/`_aggregation`/`_counter_state`,
 `pv_plants`/`pv_aggregation`/`pv_summary_aggregation`/`pv_calibration_buckets`,
 `sun_intensity_samples`,
-`batterie_config`,
-`modules`, `pool_config`,
-`outputs`, `dashboard_groups`, `dashboard_widgets`.
+`batterie_config`, `battery_daily_state`, `prognosis_config`, `prognosis_daily_consumption`,
+`prognosis_hourly_consumption`,
+`modules`, `pool_config`, `grid_control_config`, `operating_state`,
+`grid_control_log`, `outputs`, `dashboard_groups`, `dashboard_widgets`.
 
 Passwörter werden als scrypt-Hash gespeichert.
 

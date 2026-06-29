@@ -69,17 +69,28 @@ function isCommandTopic(topic) {
   return upper.endsWith('.SET') || upper.endsWith('/SET') || upper.endsWith('_SET');
 }
 
-// Auspacken des ioBroker-JSON-Formats { val, ack, ... }; sonst Rohstring.
-function unwrapMqttPayload(raw) {
+// Auspacken einer ioBroker-MQTT-Nachricht inkl. ack-Flag.
+//   { value, ack } – ack ist true/false (aus dem JSON) oder null (kein JSON-Wrap).
+// In ioBroker bedeutet ack:true den BESTÄTIGTEN Ist-Zustand, ack:false einen
+// reinen Schreibwunsch/Kommando. Letzteres ist u. a. das Echo unserer eigenen
+// Schreibvorgänge auf dem Haupt-Topic und darf NICHT als Readback gelten.
+function unwrapMqttMessage(raw) {
   const text = String(raw);
-  if (!text || (text[0] !== '{' && text[0] !== '[')) return text;
+  if (!text || (text[0] !== '{' && text[0] !== '[')) return { value: text, ack: null };
   try {
     const parsed = JSON.parse(text);
-    if (parsed && typeof parsed === 'object' && 'val' in parsed) return parsed.val;
+    if (parsed && typeof parsed === 'object' && 'val' in parsed) {
+      return { value: parsed.val, ack: typeof parsed.ack === 'boolean' ? parsed.ack : null };
+    }
   } catch (_) {
     /* kein gültiges JSON */
   }
-  return text;
+  return { value: text, ack: null };
+}
+
+// Auspacken des ioBroker-JSON-Formats { val, ack, ... }; sonst Rohstring.
+function unwrapMqttPayload(raw) {
+  return unwrapMqttMessage(raw).value;
 }
 
 function isMeaningfulValue(value) {
@@ -104,6 +115,7 @@ module.exports = {
   mqttSlashStateWildcard,
   mqttSubscribeCandidates,
   isCommandTopic,
+  unwrapMqttMessage,
   unwrapMqttPayload,
   isMeaningfulValue,
   parseValue,

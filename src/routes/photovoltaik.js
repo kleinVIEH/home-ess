@@ -18,6 +18,7 @@ const {
   buildPhotovoltaikSnapshot,
   setManualOffset,
 } = require('../photovoltaik/aggregation');
+const { clearCalibration } = require('../photovoltaik/calibration');
 const { computePvForecast } = require('../photovoltaik/forecast');
 const { parseNumber } = require('../stromverbrauch/aggregation');
 const renderPhotovoltaik = require('../views/photovoltaik');
@@ -179,6 +180,15 @@ function photovoltaikRoutes(db) {
           editingPlantId: Number(req.params.id),
         });
       }
+      next(err);
+    }
+  });
+
+  router.post('/photovoltaik/plants/:id/clear-calibration', requireAuth, async (req, res, next) => {
+    try {
+      await clearCalibration(db, Number(req.params.id));
+      await renderPage(db, res, { formMessage: 'Kalibrierung zurückgesetzt.' });
+    } catch (err) {
       next(err);
     }
   });

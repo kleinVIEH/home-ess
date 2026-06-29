@@ -13,9 +13,18 @@ const { readPhotovoltaikValues } = require('../photovoltaik/aggregation');
 const { computePvForecast } = require('../photovoltaik/forecast');
 const { computeInstantSunIntensity, readSunIntensityAverages } = require('../photovoltaik/sun-intensity');
 const { readStromverbrauchValues } = require('../stromverbrauch/aggregation');
-const { loadBatterieConfig, readBatterieData, STATE_IDS: BAT_IDS } = require('../batterie/config');
+const {
+  loadBatterieConfig, readBatterieData, batteryRemainingKwh,
+  batteryUsableStoredKwh, batteryTimeToLimitHours,
+  batteryStatus, updateBatteryDailyState,
+} = require('../batterie/config');
 const { loadPoolConfig, readPoolValue } = require('../pool/config');
 const { isEnabled } = require('../modules');
+const { getState: getGridControlState } = require('../grid-control/automation');
+const operatingState = require('../operating-state');
+const { loadPrognosisConfig } = require('../prognosis/config');
+const { buildConsumptionModel, simulateDays } = require('../prognosis/forecast');
+const { getBehaviorRecommendation } = require('../prognosis/behavior');
 
 function roundTo(value, decimals) {
   const factor = 10 ** decimals;
@@ -87,6 +96,37 @@ function percentEntry(id, label, value) {
   };
 }
 
+function numberEntry(id, label, value) {
+  const rounded = value == null ? null : roundTo(value, 0);
+  return { id, label, value: rounded, display: rounded == null ? '—' : String(rounded) };
+}
+
+function timeEntry(id, label, decimalHour) {
+  const value = decimalHour == null ? null : roundTo(decimalHour, 2);
+  if (value == null) return { id, label, value: null, display: '—' };
+  const minutes = Math.max(0, Math.min(1439, Math.round(value * 60)));
+  const display = `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')} Uhr`;
+  return { id, label, value, display };
+}
+
+function decimalEntry(id, label, value, unit = '') {
+  const rounded = value == null ? null : roundTo(value, 2);
+  return {
+    id, label, value: rounded,
+    display: rounded == null ? '—' : `${rounded.toLocaleString('de-DE', { maximumFractionDigits: 2 })}${unit ? ` ${unit}` : ''}`,
+  };
+}
+
+function hoursEntry(id, label, value) {
+  const rounded = value == null ? null : roundTo(value, 2);
+  return {
+    id, label, value: rounded,
+    display: rounded == null
+      ? '— h'
+      : `${new Intl.NumberFormat('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(rounded)} h`,
+  };
+}
+
 const PERIODS = [
   { key: 'today', label: 'heute' },
   { key: 'week', label: 'Woche' },
@@ -107,16 +147,27 @@ async function listInternalValues(db, cache) {
   const batCfg = await new Promise((resolve) => loadBatterieConfig(db, resolve));
   const poolCfg = isEnabled('pool') ? await new Promise((resolve) => loadPoolConfig(db, resolve)) : null;
 
-  const [pv, strom, sunIntensity, sunIntensityNow, forecast] = await Promise.all([
+  const [pv, strom, sunIntensity, sunIntensityNow, forecast, prognosisConfig] = await Promise.all([
     readPhotovoltaikValues(db, cache, plants),
     readStromverbrauchValues(db, cache),
     readSunIntensityAverages(db),
     computeInstantSunIntensity(db, cache),
     // Prognose ohne blockierenden Netzwerkabruf (nur Cache) – gefüllt vom periodischen Job.
     computePvForecast(db, plants, { allowFetch: false, cache }).catch(() => null),
+    loadPrognosisConfig(db),
   ]);
 
   const entries = [];
+
+  // Globaler Tagesstatus: bleibt nach einer Mindest-SoC-Netzschaltung bis zum
+  // nächsten Tageswechsel auf false.
+  entries.push(boolEntry('operating.autark', 'Autark', operatingState.getState().autark));
+  entries.push(numberEntry('prognose.autarkeTageJahr', 'Prognose autarke Tage im Jahr', operatingState.getState().autarkDaysCount));
+  entries.push(numberEntry(
+    'prognose.autarkeTageVorjahr',
+    'Prognose autarke Tage im Vorjahr',
+    operatingState.getState().autarkDaysPreviousYearCount
+  ));
 
   // Photovoltaik – Gesamtwerte
   entries.push(boolEntry('pv.directSunlight', 'Direkte Sonneneinstrahlung', pv.totals.directSunlight));
@@ -174,10 +225,168 @@ async function listInternalValues(db, cache) {
 
   // Batterie
   const bat = readBatterieData(cache);
-  if (batCfg.socTopic)      entries.push(percentEntry('batterie.soc',       'Batterie Ladezustand (SoC)', bat.soc));
+  if (batCfg.socTopic) {
+    entries.push(percentEntry('batterie.soc', 'Batterie Ladezustand (SoC)', bat.soc));
+    entries.push(energyEntry(
+      'batterie.freieKapazitaet',
+      'Batterie freie Kapazität bis voll',
+      batteryRemainingKwh(batCfg, bat.soc)
+    ));
+    entries.push(energyEntry(
+      'batterie.nutzbarBisMindestSoc',
+      'Batterie nutzbare Energie bis Mindest-SoC',
+      batteryUsableStoredKwh(batCfg, bat.soc, bat.minSoc)
+    ));
+    if (batCfg.powerTopic) {
+      entries.push(hoursEntry(
+        'batterie.restzeitBisGrenze',
+        'Batterie Restzeit bis 100 % oder Mindest-SoC',
+        batteryTimeToLimitHours(batCfg, bat.soc, bat.minSoc, bat.power)
+      ));
+    }
+  }
   if (batCfg.powerTopic)    entries.push(powerEntry  ('batterie.power',     'Batterie Leistung',         bat.power));
   if (batCfg.voltageTopic)  entries.push(voltageEntry('batterie.voltage',   'Batterie Spannung',         bat.voltage));
   if (batCfg.temperaturTopic) entries.push(temperaturEntry('batterie.temperatur', 'Batterie Temperatur', bat.temperatur));
+
+  // Systemprognose – nutzt dieselben bereits gelesenen PV-, Verbrauchs- und
+  // Batteriedaten wie die Prognoseseite und bleibt dadurch im Output konsistent.
+  const consumptionModel = await buildConsumptionModel(db, strom, prognosisConfig, cache, forecast);
+  const gridState = getGridControlState();
+  const currentSoc = Number(String(bat.soc == null ? '' : bat.soc).replace(',', '.'));
+  const isCurrentlyFull = Number.isFinite(currentSoc) && currentSoc > 98;
+  const chargedToday = await updateBatteryDailyState(
+    db,
+    `${consumptionModel.local.date.year}-${String(consumptionModel.local.date.month).padStart(2, '0')}-${String(consumptionModel.local.date.day).padStart(2, '0')}`,
+    isCurrentlyFull
+  );
+  const status = batteryStatus(batCfg, bat, {
+    chargedToday,
+    overflow: (strom.netzbezugPower != null && Number(strom.netzbezugPower) < 0) ||
+      (isEnabled('grid-control') && !!gridState.feedInActual),
+  });
+  entries.push(boolEntry('batterie.charge', 'Batterie Charge', status.charge));
+  entries.push(boolEntry('batterie.chargedToday', 'Batterie Charged today', status.chargedToday));
+  entries.push(boolEntry('batterie.discharging', 'Batterie Discharging', status.discharging));
+  entries.push(boolEntry('batterie.empty', 'Batterie Empty', status.empty));
+  entries.push(decimalEntry('batterie.emptySoc', 'Batterie EmptySOC', status.emptySoc, '%'));
+  entries.push(boolEntry('batterie.full', 'Batterie Full', status.full));
+  entries.push(boolEntry('batterie.good', 'Batterie Good', status.good));
+  entries.push(boolEntry('batterie.halfCharged', 'Batterie HalfCharged', status.halfCharged));
+  entries.push(decimalEntry('batterie.halfChargedSoc', 'Batterie HalfChargedSOC', status.halfChargedSoc, '%'));
+  entries.push(boolEntry('batterie.high', 'Batterie High', status.high));
+  entries.push(decimalEntry('batterie.minimalSoc', 'Batterie MinimalSOC', status.minimalSoc, '%'));
+  entries.push(boolEntry('batterie.overflow', 'Batterie Overflow', status.overflow));
+  entries.push(boolEntry('batterie.reserve', 'Batterie Reserve', status.reserve));
+  entries.push(decimalEntry('batterie.reserveSoc', 'Batterie ReserveSOC', status.reserveSoc, '%'));
+  const prognosis = simulateDays({
+    forecast,
+    model: consumptionModel,
+    config: prognosisConfig,
+    batteryConfig: batCfg,
+    batteryData: bat,
+  });
+  const behaviorRecommendation = await getBehaviorRecommendation(db, {
+    config: prognosisConfig,
+    battery: bat,
+    simulation: prognosis,
+  });
+  const prognosisToday = prognosis.today;
+  const prognosisTomorrow = prognosis.days[1] || null;
+  const coolingModel = consumptionModel.coolingModel || { enabled: false, sampleCount: 0, kwhPerDegree: 0 };
+  const freeBatteryKwh = batteryRemainingKwh(batCfg, bat.soc);
+  const consumptionToSunrise = consumptionModel.consumptionToSunrise;
+  const recentDailyProjection = consumptionModel.recentHourKwh == null
+    ? null
+    : consumptionModel.recentHourKwh * 24;
+  const recentConsumptionToSunrise = consumptionModel.recentHourKwh == null || consumptionModel.hoursToSunrise == null
+    ? null
+    : consumptionModel.recentHourKwh * consumptionModel.hoursToSunrise;
+  entries.push(numberEntry('prognose.status', 'Prognose Status (0 rot, 1 gelb, 2 grün)', prognosis.status));
+  entries.push(numberEntry('operating.level', 'Betriebslevel', operatingState.getState().operatingLevel));
+  entries.push(boolEntry('prognose.verhaltensmodellAktiv', 'Prognose Verhaltensmodell aktiv', prognosisConfig.behaviorActive));
+  entries.push(numberEntry(
+    'prognose.verhaltensmodell',
+    'Prognose Verhaltensmodell (0 Netzparallel, 1 Autark)',
+    prognosisConfig.behaviorModel === 'off_grid' ? 1 : 0
+  ));
+  entries.push(numberEntry('prognose.betriebslevelEmpfehlung', 'Prognose Betriebslevel Empfehlung', behaviorRecommendation.level));
+  entries.push(boolEntry(
+    'prognose.bedarfGedeckt',
+    'Prognose Bedarf bis Ladebeginn gedeckt',
+    prognosis.available && prognosis.gridBeforeCharge <= 0.05 && !prognosis.minimumBeforeCharge
+  ));
+  entries.push(boolEntry('prognose.batterieVoll', 'Prognose Batterie heute voll', prognosisToday.batteryFull));
+  entries.push(energyEntry('prognose.batterieNutzbar', 'Prognose Batterie nutzbar', prognosis.initialStored));
+  entries.push(percentEntry('prognose.batterieSocTagesende', 'Prognose Batterie SoC Tagesende', prognosisToday.batterySocEnd));
+  entries.push(percentEntry(
+    'prognose.batterieSocLadebeginn',
+    'Prognose Batterie SoC bei Ladebeginn Folgetag',
+    prognosis.nextChargeStart ? prognosis.nextChargeStart.soc : null
+  ));
+  entries.push(timeEntry(
+    'prognose.ladebeginnUhrzeit',
+    'Prognose Batterie Ladebeginn Folgetag Uhrzeit',
+    prognosis.nextChargeStart ? prognosis.nextChargeStart.hour : null
+  ));
+  entries.push(numberEntry(
+    'prognose.ladebeginnTage',
+    'Prognose Batterie Ladebeginn Folgetag in Tagen',
+    prognosis.nextChargeStart ? prognosis.nextChargeStart.dayOffset : null
+  ));
+  entries.push(boolEntry(
+    'prognose.batterieMindeststandErreicht',
+    'Prognose Batterie Mindeststand wird erreicht',
+    !!prognosis.minimumReached
+  ));
+  entries.push(timeEntry(
+    'prognose.batterieMindeststandUhrzeit',
+    'Prognose Batterie Mindeststand Uhrzeit',
+    prognosis.minimumReached ? prognosis.minimumReached.hour : null
+  ));
+  entries.push(numberEntry(
+    'prognose.batterieMindeststandTage',
+    'Prognose Batterie Mindeststand in Tagen',
+    prognosis.minimumReached ? prognosis.minimumReached.dayOffset : null
+  ));
+  entries.push(energyEntry('prognose.verbrauchTag', 'Prognose Verbrauch heute gesamt', consumptionModel.today + prognosisToday.loadKwh));
+  entries.push(energyEntry('prognose.verbrauchDurchschnitt', 'Prognose Verbrauch durchschnittlich pro Tag', consumptionModel.dailyTarget));
+  entries.push(energyEntry('prognose.verbrauchHochrechnungLetzteStunde', 'Prognose Verbrauch Tageshochrechnung aus letzter Stunde', recentDailyProjection));
+  entries.push(energyEntry('prognose.verbrauchBisSonnenaufgang', 'Prognose Verbrauch bis Sonnenaufgang', consumptionToSunrise));
+  entries.push(energyEntry('prognose.verbrauchBisSonnenaufgangLetzteStunde', 'Prognose Verbrauch bis Sonnenaufgang aus letzter Stunde', recentConsumptionToSunrise));
+  entries.push(energyEntry('prognose.verbrauchRest', 'Prognose Verbrauch heute noch', prognosisToday.loadKwh));
+  entries.push(energyEntry('prognose.pvRest', 'Prognose PV-Ertrag heute noch', prognosisToday.pvKwh));
+  entries.push(energyEntry('prognose.netzbedarf', 'Prognose Netzbedarf heute', prognosisToday.gridKwh));
+  entries.push(energyEntry('prognose.ueberschuss', 'Prognose Überschuss heute', prognosisToday.surplusKwh));
+  entries.push(energyEntry('prognose.verbrauchMorgen', 'Prognose Verbrauch morgen', prognosisTomorrow ? prognosisTomorrow.loadKwh : null));
+  entries.push(energyEntry('prognose.pvMorgen', 'Prognose PV-Ertrag morgen', prognosisTomorrow ? prognosisTomorrow.pvKwh : null));
+  entries.push(energyEntry('prognose.netzbedarfMorgen', 'Prognose Netzbedarf morgen', prognosisTomorrow ? prognosisTomorrow.gridKwh : null));
+  entries.push(energyEntry(
+    'prognose.bedarfMorgen',
+    'Prognose Bedarf morgen inklusive Akkufüllung',
+    prognosisTomorrow && freeBatteryKwh != null ? prognosisTomorrow.loadKwh + freeBatteryKwh : null
+  ));
+  entries.push(energyEntry(
+    'prognose.gesamtbedarfBisSonnenaufgang',
+    'Prognose Gesamtbedarf bis Sonnenaufgang inklusive Akkufüllung',
+    consumptionToSunrise == null || freeBatteryKwh == null ? null : consumptionToSunrise + freeBatteryKwh
+  ));
+  entries.push(energyEntry(
+    'prognose.kwhFehlen',
+    'Prognose fehlende Energie bis Ladebeginn',
+    prognosis.available ? prognosis.gridBeforeCharge : null
+  ));
+  entries.push(energyEntry('prognose.kwhFrei', 'Prognose freie Überschussenergie heute', prognosisToday.surplusKwh));
+  entries.push(energyEntry(
+    'prognose.verfuegbar',
+    'Prognose verfügbare Energie aus Akku und PV heute',
+    prognosis.available ? prognosis.initialStored + prognosisToday.pvKwh : null
+  ));
+  entries.push(boolEntry('prognose.klimaModellAktiv', 'Prognose Klimatisierungsmodell aktiv', coolingModel.enabled));
+  entries.push(numberEntry('prognose.klimaLerntage', 'Prognose Klimatisierung Lerntage', coolingModel.sampleCount));
+  entries.push(decimalEntry('prognose.klimaKwhProGrad', 'Prognose Klimatisierung Mehrverbrauch pro Grad', coolingModel.kwhPerDegree, 'kWh/°C'));
+  entries.push(energyEntry('prognose.klimaMehrverbrauchHeute', 'Prognose Klimatisierung Mehrverbrauch heute', prognosisToday.coolingKwh));
+  entries.push(energyEntry('prognose.klimaMehrverbrauchMorgen', 'Prognose Klimatisierung Mehrverbrauch morgen', prognosisTomorrow ? prognosisTomorrow.coolingKwh : null));
 
   // Pool (nur wenn Modul aktiv)
   if (poolCfg) {
@@ -186,6 +395,15 @@ async function listInternalValues(db, cache) {
     if (poolCfg.filterPumpStatusTopic) entries.push(pumpEntry    ('pool.filterPumpe',      'Pool Filterpumpe',      readPoolValue(cache, poolCfg.filterPumpStatusTopic)));
     if (poolCfg.phTopic)             entries.push(phEntry        ('pool.ph',               'Pool pH-Wert',          readPoolValue(cache, poolCfg.phTopic)));
     if (poolCfg.chlorTopic)          entries.push(phEntry        ('pool.chlor',            'Pool Chlor (mg/l)',     readPoolValue(cache, poolCfg.chlorTopic)));
+  }
+
+  if (isEnabled('grid-control')) {
+    const grid = gridState;
+    entries.push(boolEntry('grid.bySoc', 'Grid by SoC', grid.gridBySoc));
+    entries.push(boolEntry('grid.byVoltage', 'Grid by Voltage', grid.gridByVoltage));
+    entries.push(boolEntry('grid.byTemperature', 'Grid by Temperature', grid.gridByTemperature));
+    entries.push(boolEntry('grid.byLoad', 'Grid by Load', grid.gridByLoad));
+    entries.push(boolEntry('grid.actual', 'Grid actual', grid.gridActual));
   }
 
   entries.sort((a, b) => a.label.localeCompare(b.label, 'de'));

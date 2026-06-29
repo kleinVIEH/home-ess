@@ -1,6 +1,6 @@
 'use strict';
 
-const { normalizeMqttTopic } = require('../mqtt/topics');
+const { normalizeMqttTopic, isCommandTopic } = require('../mqtt/topics');
 
 function dbAll(db, sql, params = []) {
   return new Promise((resolve, reject) => {
@@ -59,6 +59,9 @@ function validateOutputInput(input) {
   const errors = [];
   if (!input.sourceId) errors.push('Bitte einen internen Wert auswählen.');
   if (!input.targetTopic) errors.push('Bitte ein Ziel-Topic angeben.');
+  if (input.targetTopic && isCommandTopic(input.targetTopic)) {
+    errors.push('Command-Topics können nicht sicher zurückgelesen werden. Bitte einen bestätigten State als Ziel verwenden.');
+  }
   return errors;
 }
 

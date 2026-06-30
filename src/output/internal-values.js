@@ -139,6 +139,11 @@ function numberEntry(id, label, value) {
   return { id, label, value: rounded, display: rounded == null ? '—' : String(rounded) };
 }
 
+function secondsUntilNextCharge(nextCharge, now = Date.now()) {
+  if (!nextCharge) return 0;
+  return Math.max(0, Math.round((nextCharge.at - now) / 1000));
+}
+
 function timeEntry(id, label, decimalHour) {
   const value = decimalHour == null ? null : roundTo(decimalHour, 2);
   if (value == null) return { id, label, value: null, display: '—' };
@@ -472,7 +477,7 @@ async function listInternalValues(db, cache) {
       // Voraussichtlicher nächster Ladebeginn (nur wenn gerade nicht geladen wird):
       // Restzeit in Sekunden plus Uhrzeit der erwarteten Stunde.
       const nextCharge = wallboxAutomation.getNextCharge(wb.id);
-      const secondsToCharge = nextCharge ? Math.max(0, Math.round((nextCharge.at - Date.now()) / 1000)) : null;
+      const secondsToCharge = secondsUntilNextCharge(nextCharge);
       entries.push(numberEntry(`wallbox.${wb.id}.naechsterLadebeginnSekunden`, `Wallbox ${wb.name} – nächster Ladebeginn in Sekunden`, secondsToCharge));
       entries.push(timeEntry(`wallbox.${wb.id}.naechsterLadebeginn`, `Wallbox ${wb.name} – nächster Ladebeginn Uhrzeit`, nextCharge ? nextCharge.hour : null));
     }
@@ -492,4 +497,4 @@ async function listInternalValues(db, cache) {
   return entries;
 }
 
-module.exports = { listInternalValues, categoryForId, VALUE_CATEGORIES };
+module.exports = { listInternalValues, categoryForId, secondsUntilNextCharge, VALUE_CATEGORIES };

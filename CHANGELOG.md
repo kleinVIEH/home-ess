@@ -3,6 +3,13 @@
 Alle nennenswerten Änderungen an homeESS. Format angelehnt an
 [Keep a Changelog](https://keepachangelog.com/de/1.1.0/).
 
+## [0.8.2] — 2026-06-30
+
+### Geändert
+
+- Der Output **Nächster Wallbox-Ladebeginn in Sekunden** liefert ohne
+  prognostizierten Ladebeginn `0` statt keinen Sollwert.
+
 ## [0.8.1] — 2026-06-30
 
 ### Geändert

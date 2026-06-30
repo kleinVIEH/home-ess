@@ -1,5 +1,27 @@
 # Changelog
 
+- Wallbox-Steuerung robuster gemacht: Der erste MQTT-Status nach einem Neustart
+  wird nur als Ausgangswert übernommen und nicht als manuelle Schaltänderung.
+  Auf jeder Wallbox-Karte zeigt ein Umschalter den aktuellen Steuerzustand
+  **Automatik / Aus / Vollladen** und erlaubt eine eindeutige manuelle Übersteuerung.
+- Im Wallbox-Modus **Privat** ist Laden oberhalb des Mindest-Ladestands nur noch
+  freigegeben, wenn die Tagesprognose Überschuss erwartet, den der Hausakku nicht
+  mehr aufnehmen kann. Batterientladung wird live gegengerechnet, nahe Mindest-SoC
+  bleibt die flexible Ladung aus und ein Soll-Leistungs-Topic drosselt passend.
+  **Beruflich** berechnet den spätesten Start aus Restenergie und Ladeleistung für
+  06:00 Uhr; **Immer voll** lässt das Ladegerät bei erlaubter Priorität aktiviert.
+  Ohne Soll-Leistungs-Topic startet Überschussladen erst, wenn die feste
+  Wallboxleistung vollständig gedeckt ist.
+  Ein volles Fahrzeug wird bei ausbleibender Ladeleistung nicht mehr als
+  hängender Ladestart behandelt; laufende Neustartzyklen enden mit der Vollmeldung.
+- Die manuelle Wallbox-Steuerung kehrt definiert zur **Automatik** zurück:
+  **Aus** am Folgetag erst bei PV-Leistung über Eigenverbrauch plus Wallboxleistung
+  und ausreichender Hausakku-Reserve; **Vollladen** nach zuvor erkannter Ladung beim
+  Abfall unter die Leerlaufschwelle oder beim Abziehen. Eigene Automatikbefehle
+  werden über einen erwarteten Steuer-Topic-Readback bestätigt und niemals als
+  Nutzerwunsch gewertet; das Status-Topic bleibt reiner Ist-Zustand.
+  Nach einem Neustart wartet die flexible Ladung auf die erste vollständige Prognose.
+
 Alle nennenswerten Änderungen an homeESS. Format angelehnt an
 [Keep a Changelog](https://keepachangelog.com/de/1.1.0/).
 
@@ -55,10 +77,11 @@ Alle nennenswerten Änderungen an homeESS. Format angelehnt an
       der **Leerlaufschwelle** (`stall_power_w`, Default 200 W), wird einmal für eine
       Minute aus- und wieder eingeschaltet (gedeckelte Versuche). **Nur bei tatsächlich
       eingestecktem Auto** (`plugged === true`); ohne bestätigtes Anstecken kein Aus/Ein-Takten.
-    - *Manuell EIN am Broker* → einmalige Volladung, sofern die Priorität des aktiven
-      Modus das aktuelle Betriebslevel freigibt.
-    - *Manuell AUS am Broker* → bleibt aus, bis am Folgetag die **PV-Leistung erstmals die
-      Wallbox-Maximalleistung übersteigt**; danach greift wieder der gewählte Plan.
+    - *Manuell EIN am Broker* → einmalige Volladung bis die zuvor vorhandene
+      Ladeleistung unter die Leerlaufschwelle fällt oder das Fahrzeug abgezogen wird.
+    - *Manuell AUS am Broker* → bleibt aus, bis am Folgetag PV-Leistung größer als
+      Eigenverbrauch plus Wallbox-Maximalleistung ist und der Hausakku genügend
+      Abstand zum Mindest-SoC hat; danach greift wieder der gewählte Plan.
     - *„Angesteckt"-Signal nicht als Sperre*: da es per Mobilfunk vom Fahrzeug kommt und
       veraltet sein kann, wird auch bei scheinbar nicht angestecktem Auto eingeschaltet,
       wenn der Plan laden möchte (ein echtes Fehlen fängt die Stall-Erkennung ab).

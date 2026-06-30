@@ -33,6 +33,16 @@ function modeButtons(box) {
   ).join('');
 }
 
+function controlButtons(box) {
+  return [
+    { value: 'auto', label: 'Automatik' },
+    { value: 'off', label: 'Aus' },
+    { value: 'full', label: 'Vollladen' },
+  ].map((control) =>
+    `<button class="pump-mode-btn" id="wb-control-${box.id}-${control.value}" onclick="setWallboxControl(${box.id}, '${control.value}')">${control.label}</button>`
+  ).join('');
+}
+
 function boxCard(box, live) {
   const v = live || {};
   const f = v.formatted || {};
@@ -41,7 +51,14 @@ function boxCard(box, live) {
                 <div>
                   <h3>${escapeHtml(box.name)}</h3>
                   <p class="muted">Max ${escapeHtml(box.maxPowerW)} W · Fahrzeug-Akku ${escapeHtml(box.batteryCapacityKwh)} kWh</p>
-                  <div class="pump-mode-btns" id="wb-modes-${box.id}">${modeButtons(box)}</div>
+                  <div class="wallbox-switch-row">
+                    <span class="wallbox-switch-label">Ladeplan</span>
+                    <div class="pump-mode-btns" id="wb-modes-${box.id}">${modeButtons(box)}</div>
+                  </div>
+                  <div class="wallbox-switch-row">
+                    <span class="wallbox-switch-label">Steuerung</span>
+                    <div class="pump-mode-btns" id="wb-controls-${box.id}">${controlButtons(box)}</div>
+                  </div>
                 </div>
                 <div class="plant-power-stack">
                   <div class="plant-power" id="wb-power-${box.id}">${escapeHtml(f.power || '— W')}</div>
@@ -207,6 +224,7 @@ function renderWallbox({
 
   const script = `    const wallboxes = ${JSON.stringify(boxes)};
     const modeByBox = ${JSON.stringify(Object.fromEntries(values.map((v) => [v.id, v.mode])))};
+    const controlByBox = ${JSON.stringify(Object.fromEntries(values.map((v) => [v.id, v.controlMode || 'auto'])))};
     const initialDialogMode = ${JSON.stringify(dialogMode)};
     const initialEditingBoxId = ${editingBoxId == null ? 'null' : Number(editingBoxId)};
     const initialDialogValues = ${JSON.stringify(dialogValues || {})};
@@ -220,9 +238,29 @@ function renderWallbox({
     }
     Object.keys(modeByBox).forEach(function (id) { applyModeButtons(Number(id), modeByBox[id]); });
 
+    function applyControlButtons(id, control) {
+      ['auto', 'off', 'full'].forEach(function (value) {
+        var btn = document.getElementById('wb-control-' + id + '-' + value);
+        if (!btn) return;
+        var activeClass = value === 'auto' ? 'pump-mode-btn--active-auto'
+          : value === 'off' ? 'pump-mode-btn--active-off' : 'pump-mode-btn--active-on';
+        btn.className = 'pump-mode-btn' + (value === control ? ' ' + activeClass : '');
+      });
+    }
+    Object.keys(controlByBox).forEach(function (id) {
+      applyControlButtons(Number(id), controlByBox[id]);
+    });
+
     function setWallboxMode(id, mode) {
       fetch('/wallbox/box/' + id + '/mode/' + mode, { method: 'POST' })
         .then(function () { applyModeButtons(id, mode); setTimeout(refreshWallbox, 300); })
+        .catch(function () {});
+    }
+
+    function setWallboxControl(id, control) {
+      fetch('/wallbox/box/' + id + '/control/' + control, { method: 'POST' })
+        .then(function (res) { if (!res.ok) throw new Error('Steuerung fehlgeschlagen'); return res.json(); })
+        .then(function (data) { applyControlButtons(id, data.controlMode); setTimeout(refreshWallbox, 300); })
         .catch(function () {});
     }
 
@@ -302,6 +340,7 @@ function renderWallbox({
           var plug = document.getElementById('wb-plug-' + b.id);
           if (plug) plug.textContent = b.plugged === true ? ' · 🔌 angesteckt' : b.plugged === false ? ' · nicht angesteckt' : '';
           applyModeButtons(b.id, b.mode);
+          applyControlButtons(b.id, b.controlMode || 'auto');
         });
       } catch (_) {}
     }

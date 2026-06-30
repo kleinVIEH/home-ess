@@ -83,3 +83,28 @@ test('Wallbox-Ladeplan vergibt PV-Überschuss nicht mehrfach und plant Pflichtla
   assert.equal(full.nextCharge.hour, 8);
   assert.equal(wallboxForecastForDay(model, '2026-06-30', 0).totalKwh, 11);
 });
+
+test('Privat-Ladeplan nutzt nur Überschuss, der nicht mehr in den Hausakku passt', () => {
+  const common = {
+    dailyByWeekday: Array(7).fill(0), profilesByWeekday: Array.from({ length: 7 }, () => Array(24).fill(1 / 24)),
+    samplesByWeekday: Array(7).fill(3), todayRemainingKwh: 0,
+    maxPowerW: 3000, batteryCapacityKwh: 50, minChargePercent: 40,
+    businessDays: [], soc: 50, id: 1, name: 'Privat', mode: 1, priority: 5,
+  };
+  const slots = [10, 11].map((hour) => ({
+    dateKey: '2026-06-30', dayIndex: 0, hour, durationHours: 1,
+    startMs: Date.UTC(2026, 5, 30, hour), pvKwh: 4, houseKwh: 1,
+  }));
+  const model = { boxes: [{ ...common }] };
+
+  planWallboxSchedule(model, slots, {
+    capacityKwh: 10, minSoc: 20, soc: 20, chargeEfficiency: 1, dischargeEfficiency: 1,
+  });
+  assert.equal(model.boxes[0].plannedFlexibleEnergyByDate['2026-06-30'], 0);
+
+  const fullBatteryModel = { boxes: [{ ...common }] };
+  planWallboxSchedule(fullBatteryModel, slots.map((slot) => ({ ...slot })), {
+    capacityKwh: 10, minSoc: 20, soc: 100, chargeEfficiency: 1, dischargeEfficiency: 1,
+  });
+  assert.equal(fullBatteryModel.boxes[0].plannedFlexibleEnergyByDate['2026-06-30'], 6);
+});

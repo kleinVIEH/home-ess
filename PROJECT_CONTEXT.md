@@ -242,12 +242,13 @@ ist ein Web-Dashboard mit vorgeschaltetem Login.
       nacheinander auf den verbleibenden PV-Überschuss verteilt. Die gelernte Historie
       bleibt Fallback für noch unbekannte künftige Ladevorgänge.
     - *Drei Lademodi mit je eigener Priorität* (`wallbox/planner.js`): **Privat** lädt bis
-      zum Mindest-Ladestand, darüber nur Überschuss (verfügbarer Überschuss =
-      Netzeinspeisung + Batterie-Ladeleistung, solange Haus-SoC > Mindest-SoC);
-      **Beruflich** stellt das Auto an gewählten Wochentagen vorausschauend voll bereit
-      (tagsüber Überschuss, ab 18 Uhr Garantieladung), freie Tage → Privatregel;
-      **Immer voll** lädt durchgehend. Mit Soll-Leistungs-Topic Feinmodulation gegen den
-      Überschuss, sonst An/Aus an einer Schwelle.
+      zum Mindest-Ladestand, darüber nur den prognostizierten Überschuss, der nach
+      Hausverbrauch und Hausakku nicht mehr speicherbar ist. Hausakku-Entladung wird
+      live gegengerechnet, nahe dessen Mindest-SoC bleibt die flexible Ladung aus.
+      **Beruflich** berechnet den spätesten Start aus Fahrzeug-Restenergie und
+      Ladeleistung für 06:00 Uhr an gewählten Arbeitstagen; freie Tage → Privatregel.
+      **Immer voll** lässt das Ladegerät aktiviert. Mit Soll-Leistungs-Topic
+      Feinmodulation, sonst An/Aus an einer Schwelle.
     - Steuerschleife `wallbox/automation.js` (30-s-Tick + serielle Kette, Init aus
       `routes/wallbox.js`). Jede Box ist **Verbraucher am Betriebslevel-Handler** mit der
       Priorität des aktiven Modus (Einschalten nur nach Freigabe, Zwangsabschaltung,
@@ -258,11 +259,13 @@ ist ein Web-Dashboard mit vorgeschaltetem Login.
       (hängt die Ist-Leistung trotz Befehl nach `stall_timeout_seconds` unter
       `stall_power_w`, 1 Minute aus/ein, gedeckelte Versuche — **nur bei `plugged === true`**,
       damit ohne eingestecktes Auto kein Aus/Ein-Takten entsteht); **manuell EIN am Broker** →
-      einmalige Volladung (sofern Priorität/Level es zulassen); **manuell AUS am Broker** →
-      aus bis Folgetag mit PV-Leistung > Wallbox-Maximalleistung; das **„angesteckt"-Signal
+      einmalige Volladung bis Leistungsabfall unter Leerlaufschwelle oder Abziehen;
+      **manuell AUS am Broker** → aus bis Folgetag mit PV größer als Eigenverbrauch plus
+      Wallboxleistung und ausreichender Hausakku-Reserve; das **„angesteckt"-Signal
       sperrt nicht** (Mobilfunk-Signal, möglich falsch-negativ — bei Ladewunsch wird trotzdem
-      eingeschaltet). Manuelle Schaltungen werden über den Broker-Status-Readback gegen den
-      zuletzt gesendeten Befehl erkannt (Settle-Fenster gegen Eigen-Echo).
+      eingeschaltet). Manuelle Schaltungen werden ausschließlich über das Steuer-Topic
+      erkannt. Erwartete Readbacks eigener Automatikbefehle werden konsumiert und nicht
+      als Nutzerwunsch gewertet; das Status-Topic ist reiner Ist-Zustand.
     - *Nächster Ladebeginn*: wird gerade nicht geladen, übernimmt die Automatik den
       Ladebeginn aus dem gemeinsamen Mehr-Wallbox-Vorausplan. `predictNextChargeStart`
       bleibt Fallback und behandelt insbesondere die manuelle Sperre. Die Steuerschleife legt

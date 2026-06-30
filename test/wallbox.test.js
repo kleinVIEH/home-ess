@@ -68,11 +68,11 @@ test('Priorität folgt dem aktiven Lademodus', () => {
   assert.equal(priorityForMode({ ...box, mode: 3 }), 4);
 });
 
-test('Immer-voll lädt bis voll und stoppt dann', () => {
+test('Immer-voll lässt das Ladegerät bei erlaubter Priorität dauerhaft aktiv', () => {
   const box = { mode: 3, maxPowerW: 11000, priorityFull: 4, setpointTopic: 'x' };
   assert.equal(planCharge(box, { plugged: true, soc: 60 }).desiredOn, true);
   assert.equal(planCharge(box, { plugged: true, soc: 60 }).setpointW, 11000);
-  assert.equal(planCharge(box, { plugged: true, soc: 100 }).desiredOn, false);
+  assert.equal(planCharge(box, { plugged: true, soc: 100 }).desiredOn, true);
   // „angesteckt"-Signal sperrt nicht: bei scheinbar nicht angestecktem Auto wird
   // dennoch geladen, wenn der Plan es will (Mobilfunk-Signal unzuverlässig).
   assert.equal(planCharge(box, { plugged: false, soc: 50 }).desiredOn, true);
@@ -96,21 +96,82 @@ test('Privat: unter Mindest-Ladestand volle Leistung, darüber nur Überschuss',
 });
 
 test('Privat ohne Soll-Topic schaltet an der Überschussschwelle', () => {
-  const box = { mode: 1, maxPowerW: 11000, minChargePercent: 30, priorityPrivate: 5, setpointTopic: '' };
+  const box = { mode: 1, maxPowerW: 3000, minChargePercent: 30, priorityPrivate: 5, setpointTopic: '' };
   assert.equal(planCharge(box, { plugged: true, soc: 50, surplusW: 500 }).desiredOn, false);
-  assert.equal(planCharge(box, { plugged: true, soc: 50, surplusW: 2000 }).desiredOn, true);
+  assert.equal(planCharge(box, { plugged: true, soc: 50, surplusW: 2000 }).desiredOn, false);
+  assert.equal(planCharge(box, { plugged: true, soc: 50, surplusW: 3000 }).desiredOn, true);
 });
 
-test('Beruflich: Garantieladung abends am Vorabend eines Arbeitstags', () => {
-  // businessDays enthält Montag (0). Sonntag (weekday 6) abends → morgen Arbeitstag.
+test('Privat lädt oberhalb Mindeststand nur bei nicht speicherbarem Prognose-Überschuss', () => {
+  const box = { mode: 1, maxPowerW: 3000, minChargePercent: 40, priorityPrivate: 5, setpointTopic: '' };
+
+  // Ein momentaner PV-Peak reicht nicht, wenn der Hausakku ihn noch aufnehmen kann.
+  let p = planCharge(box, {
+    plugged: true, soc: 51, surplusW: 2300,
+    prognosisOverflowKwh: 0,
+  });
+  assert.equal(p.desiredOn, false);
+  assert.match(p.reason, /nicht speicherbaren Überschuss/);
+
+  // Unterhalb des Mindeststands bleibt die Pflichtladung von der Prognose unabhängig.
+  p = planCharge(box, {
+    plugged: true, soc: 35, surplusW: 0,
+    prognosisOverflowKwh: 0,
+  });
+  assert.equal(p.desiredOn, true);
+
+  // Nur bei prognostizierter freier Energie darf der Live-Überschuss laden.
+  p = planCharge(box, {
+    plugged: true, soc: 51, surplusW: 3000,
+    prognosisOverflowKwh: 2.5,
+  });
+  assert.equal(p.desiredOn, true);
+});
+
+test('Privat wartet oberhalb Mindeststand nach Neustart auf die Prognose', () => {
+  const box = { mode: 1, maxPowerW: 3000, minChargePercent: 40, priorityPrivate: 5, setpointTopic: '' };
+  const p = planCharge(box, {
+    plugged: true, soc: 52, surplusW: 2300, prognosisAvailable: false,
+  });
+  assert.equal(p.desiredOn, false);
+  assert.match(p.reason, /wartet auf vollständige Tagesprognose/);
+});
+
+test('Privat schützt die Reserve des Hausakkus trotz prognostiziertem Überlauf', () => {
+  const box = { mode: 1, maxPowerW: 3000, minChargePercent: 40, priorityPrivate: 5, setpointTopic: 'x' };
+  const p = planCharge(box, {
+    soc: 52, surplusW: 2300, prognosisOverflowKwh: 3,
+    houseBatterySoc: 24, houseBatteryMinSoc: 20,
+  });
+  assert.equal(p.desiredOn, false);
+  assert.match(p.reason, /Hausakku nahe Mindest-SoC/);
+});
+
+test('Beruflich: Garantieladung startet nach berechneter Restladezeit', () => {
   const box = {
     mode: 2, maxPowerW: 11000, minChargePercent: 30, priorityBusiness: 3,
-    priorityPrivate: 5, businessDays: [0], setpointTopic: 'x',
+    priorityPrivate: 5, businessDays: [0], setpointTopic: 'x', batteryCapacityKwh: 50,
   };
-  const p = planCharge(box, { plugged: true, soc: 40, surplusW: 0, hour: 20, weekday: 6, tomorrowWeekday: 0 });
+  // Montag 02:35 Uhr: knapp 30 kWh Restenergie benötigen rund drei Stunden bis 06:00.
+  const p = planCharge(box, {
+    plugged: true, soc: 40, surplusW: 0, hour: 2, minute: 35,
+    weekday: 0, tomorrowWeekday: 1,
+  });
   assert.equal(p.desiredOn, true);
   assert.equal(p.setpointW, 11000);
   assert.equal(p.priority, 3);
+});
+
+test('Beruflich wartet vor dem spätesten notwendigen Ladebeginn', () => {
+  const box = {
+    mode: 2, maxPowerW: 11000, batteryCapacityKwh: 50, minChargePercent: 30,
+    priorityBusiness: 3, priorityPrivate: 5, businessDays: [0], setpointTopic: 'x',
+  };
+  const p = planCharge(box, {
+    plugged: true, soc: 40, surplusW: 0, hour: 20, minute: 0,
+    weekday: 6, tomorrowWeekday: 0, prognosisOverflowKwh: 0,
+  });
+  assert.equal(p.desiredOn, false);
 });
 
 test('Beruflich: freier Tag fällt auf die Privatregel zurück', () => {
@@ -130,7 +191,9 @@ test('Beruflich: freier Tag fällt auf die Privatregel zurück', () => {
 function freshState() {
   return {
     output: null, changedAt: 0, setpointW: null, lastBrokerStatus: null,
-    manualFull: false, manualOff: false, manualOffDay: '',
+    brokerStatusInitialized: true, expectedBrokerStatus: null,
+    manualFull: false, manualFullSawCharging: false,
+    manualOff: false, manualOffDay: '',
     chargeStartedAt: null, restartUntil: 0, restartAttempts: 0,
   };
 }
@@ -138,11 +201,61 @@ function freshState() {
 function baseDecideCtx(over = {}) {
   return {
     plan: { desiredOn: false, setpointW: null, priority: 3 },
-    brokerStatus: null, powerW: null, pvPowerW: null, soc: null, plugged: true,
+    brokerStatus: null, powerW: null, pvPowerW: null, selfConsumptionW: 0,
+    houseBatterySoc: 30, houseBatteryMinSoc: 20, soc: null, plugged: true,
     todayKey: '2026-06-30', levelAllows: true, now: 1_000_000,
     ...over,
   };
 }
+
+test('Erster Broker-Status nach Neustart löst keine manuelle Volladung aus', () => {
+  const box = { id: 1, maxPowerW: 3000, setpointTopic: '' };
+  const s = freshState();
+  s.brokerStatusInitialized = false;
+  const d = decideWallboxAction(box, s, baseDecideCtx({
+    plan: { desiredOn: false, setpointW: null, priority: 5,
+      reason: 'Privat: nur Überschuss' },
+    brokerStatus: 'on', soc: 51,
+  }));
+
+  assert.equal(s.lastBrokerStatus, 'on');
+  assert.equal(s.brokerStatusInitialized, true);
+  assert.equal(s.manualFull, false);
+  assert.equal(d.on, false);
+});
+
+test('Erst eine spätere Broker-Wertänderung löst manuelles Vollladen aus', () => {
+  const box = { id: 1, maxPowerW: 3000, setpointTopic: '' };
+  const s = freshState();
+  s.brokerStatusInitialized = false;
+
+  decideWallboxAction(box, s, baseDecideCtx({ brokerStatus: 'off' }));
+  assert.equal(s.manualFull, false);
+
+  const d = decideWallboxAction(box, s, baseDecideCtx({
+    brokerStatus: 'on', levelAllows: true, now: 1_030_000,
+  }));
+  assert.equal(s.manualFull, true);
+  assert.equal(d.on, true);
+});
+
+test('Readback eines Automatikbefehls ist kein manueller Schaltwunsch', () => {
+  const box = { id: 1, maxPowerW: 3000, setpointTopic: '' };
+  const s = freshState();
+  s.output = 'on';
+  s.lastBrokerStatus = 'off';
+  s.expectedBrokerStatus = 'on';
+
+  const d = decideWallboxAction(box, s, baseDecideCtx({
+    plan: { desiredOn: true, setpointW: null, priority: 5 },
+    brokerStatus: 'on',
+  }));
+
+  assert.equal(s.expectedBrokerStatus, null);
+  assert.equal(s.lastBrokerStatus, 'on');
+  assert.equal(s.manualFull, false);
+  assert.equal(d.on, true);
+});
 
 test('Manuell EIN am Broker löst einmalige Volladung aus (wenn Level es zulässt)', () => {
   const box = { id: 1, maxPowerW: 11000, setpointTopic: 'x' };
@@ -164,6 +277,17 @@ test('Manuell EIN wird ignoriert, wenn die Modus-Priorität es nicht zulässt', 
   s.output = 'off'; s.lastBrokerStatus = 'off';
   const d = decideWallboxAction(box, s, baseDecideCtx({ brokerStatus: 'on', levelAllows: false }));
   assert.equal(s.manualFull, false);
+  assert.equal(d.on, false);
+});
+
+test('Prioritäts-Gate sperrt auch Immer-voll bei vollem Fahrzeug', () => {
+  const box = { id: 1, mode: 3, maxPowerW: 3000, priorityFull: 4, setpointTopic: '' };
+  const s = freshState();
+  const plan = planCharge(box, { soc: 100 });
+  const d = decideWallboxAction(box, s, baseDecideCtx({
+    plan, soc: 100, levelAllows: false,
+  }));
+  assert.equal(plan.desiredOn, true);
   assert.equal(d.on, false);
 });
 
@@ -200,6 +324,54 @@ test('Manuell AUS sperrt bis Folgetag mit PV über Wallbox-Leistung', () => {
   }));
   assert.equal(s.manualOff, false);
   assert.equal(d.on, true);
+});
+
+test('Umschalter AUS kehrt erst bei PV-Deckung und Hausakku-Reserve am Folgetag zurück', () => {
+  const box = { id: 1, maxPowerW: 11000, setpointTopic: '' };
+  const s = freshState();
+  s.manualOff = true;
+  s.manualOffDay = '2026-06-30';
+
+  let d = decideWallboxAction(box, s, baseDecideCtx({
+    plan: { desiredOn: true, setpointW: null, priority: 3 },
+    todayKey: '2026-07-01', pvPowerW: 15000, selfConsumptionW: 3000,
+    houseBatterySoc: 24, houseBatteryMinSoc: 20,
+  }));
+  assert.equal(s.manualOff, true);
+  assert.equal(d.on, false);
+
+  d = decideWallboxAction(box, s, baseDecideCtx({
+    plan: { desiredOn: true, setpointW: null, priority: 3 },
+    todayKey: '2026-07-01', pvPowerW: 15000, selfConsumptionW: 3000,
+    houseBatterySoc: 30, houseBatteryMinSoc: 20,
+  }));
+  assert.equal(s.manualOff, false);
+  assert.equal(d.on, true);
+});
+
+test('Manuelles Vollladen endet nach echter Ladeleistung beim Abfall unter Leerlaufschwelle', () => {
+  const box = { id: 1, maxPowerW: 3000, setpointTopic: '', powerTopic: 'p', stallPowerW: 20 };
+  const s = freshState();
+  s.manualFull = true;
+
+  let d = decideWallboxAction(box, s, baseDecideCtx({ powerW: 2300 }));
+  assert.equal(s.manualFull, true);
+  assert.equal(s.manualFullSawCharging, true);
+  assert.equal(d.on, true);
+
+  d = decideWallboxAction(box, s, baseDecideCtx({ powerW: 0, now: 1_030_000 }));
+  assert.equal(s.manualFull, false);
+  assert.equal(s.manualFullSawCharging, false);
+  assert.equal(d.on, false);
+});
+
+test('Manuelles Vollladen endet beim Abziehen des Fahrzeugs', () => {
+  const box = { id: 1, maxPowerW: 3000, setpointTopic: '', powerTopic: 'p', stallPowerW: 20 };
+  const s = freshState();
+  s.manualFull = true;
+  const d = decideWallboxAction(box, s, baseDecideCtx({ plugged: false, powerW: 0 }));
+  assert.equal(s.manualFull, false);
+  assert.equal(d.on, false);
 });
 
 test('Stall-Erkennung schaltet nach Vorgabezeit für einen Neustart ab', () => {
@@ -279,10 +451,46 @@ test('Gesunde Ladeleistung löst keinen Neustart aus', () => {
   assert.equal(s.restartUntil, 0);
 });
 
+test('Volles Fahrzeug löst trotz aktivem Ladegerät keinen Neustart aus', () => {
+  const box = { id: 1, mode: 3, maxPowerW: 3000, priorityFull: 4, setpointTopic: '',
+    powerTopic: 'p', stallTimeoutSeconds: 120, stallPowerW: 20 };
+  const s = freshState();
+  const t0 = 1_000_000;
+  const plan = planCharge(box, { soc: 100 });
+
+  decideWallboxAction(box, s, baseDecideCtx({
+    plan, powerW: 0, soc: 100, now: t0,
+  }));
+  const d = decideWallboxAction(box, s, baseDecideCtx({
+    plan, powerW: 0, soc: 100, now: t0 + 300000,
+  }));
+
+  assert.equal(d.on, true);
+  assert.equal(s.restartUntil, 0);
+  assert.equal(s.restartAttempts, 0);
+});
+
+test('Vollmeldung beendet einen bereits laufenden Neustartzyklus', () => {
+  const box = { id: 1, mode: 3, maxPowerW: 3000, priorityFull: 4, setpointTopic: '',
+    powerTopic: 'p', stallTimeoutSeconds: 120, stallPowerW: 20 };
+  const s = freshState();
+  s.restartUntil = 2_000_000;
+  s.restartAttempts = 1;
+  const plan = planCharge(box, { soc: 100 });
+
+  const d = decideWallboxAction(box, s, baseDecideCtx({
+    plan, powerW: 0, soc: 100, now: 1_500_000,
+  }));
+
+  assert.equal(d.on, true);
+  assert.equal(s.restartUntil, 0);
+  assert.equal(s.restartAttempts, 0);
+});
+
 // ── Vorhersage nächster Ladebeginn ──────────────────────────────────────────
 
 test('Nächster Ladebeginn: erste Stunde mit ausreichend Überschuss', () => {
-  const box = { id: 1, mode: 1, maxPowerW: 11000, setpointTopic: '' };
+  const box = { id: 1, mode: 1, maxPowerW: 3000, setpointTopic: '' };
   const now = 1_000_000;
   const series = [
     { startMs: now + 3600000, dateKey: '2026-06-30', dayIndex: 0, hour: 10, pvW: 1000, surplusW: 500 },
@@ -313,8 +521,8 @@ test('Nächster Ladebeginn nach manuellem Aus: Folgetag mit PV über Wallbox-Lei
     { startMs: now + 3600000, dateKey: '2026-06-30', dayIndex: 0, hour: 13, pvW: 15000, surplusW: 9000 },
     // Folgetag, PV unter Wallbox-Leistung → nicht
     { startMs: now + 20 * 3600000, dateKey: '2026-07-01', dayIndex: 1, hour: 9, pvW: 8000, surplusW: 4000 },
-    // Folgetag, PV erstmals über Wallbox-Leistung → das ist es
-    { startMs: now + 22 * 3600000, dateKey: '2026-07-01', dayIndex: 1, hour: 11, pvW: 12000, surplusW: 7000 },
+    // Folgetag, Überschuss erstmals über Wallbox-Leistung → das ist es
+    { startMs: now + 22 * 3600000, dateKey: '2026-07-01', dayIndex: 1, hour: 11, pvW: 15000, surplusW: 12000 },
   ];
   const next = predictNextChargeStart(box, s, {
     series, nowMs: now, isCharging: false, full: false, weekdayMon: 1, tomorrowWeekdayMon: 2,
@@ -351,6 +559,29 @@ test('Überschuss zählt Batterieladung nicht, wenn SoC am Mindest-SoC liegt', (
 
 test('Netzbezug (positiv) ergibt keinen Überschuss', () => {
   assert.equal(houseSurplusWatt({ netzbezugPower: 800 }, { power: -500, soc: 50 }, 20), 0);
+});
+
+test('Eigene Wallbox-Leistung wird gegen gleichzeitigen Netzbezug verrechnet', () => {
+  // Die Box lädt mit 2300 W, die vollständig aus dem Netz kommen: ohne die Box
+  // bliebe kein Überschuss übrig und die Privatladung muss oberhalb des Mindest-SoC
+  // abschalten.
+  assert.equal(
+    houseSurplusWatt({ netzbezugPower: 2300 }, { power: -500, soc: 50 }, 20, 2300),
+    0
+  );
+  // Deckt PV bereits 1500 W der laufenden Ladung, bleiben genau diese als
+  // hypothetisch verfügbare Leistung erhalten.
+  assert.equal(
+    houseSurplusWatt({ netzbezugPower: 800 }, { power: -500, soc: 50 }, 20, 2300),
+    1000
+  );
+});
+
+test('Hausakku-Entladung gilt niemals als Wallbox-Überschuss', () => {
+  assert.equal(
+    houseSurplusWatt({ netzbezugPower: 0 }, { power: -2300, soc: 50 }, 20, 2300),
+    0
+  );
 });
 
 // ── Zähler-/Summenfortschreibung ────────────────────────────────────────────

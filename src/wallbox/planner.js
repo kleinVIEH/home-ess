@@ -11,6 +11,11 @@ const FULL_SOC = 99;          // ab hier gilt das Fahrzeug als voll
 const SURPLUS_ON_W = 1400;    // Einschaltschwelle für reinen Überschussbetrieb (ohne Soll-Topic)
 const MIN_CHARGE_W = 300;     // darunter lohnt Laden nicht
 const BUSINESS_FORCE_HOUR = 18; // ab dieser Stunde Garantieladung vor einem Arbeitstag
+const BUSINESS_READY_HOUR = 6;
+const BUSINESS_START_BUFFER_HOURS = 0.5;
+const CHARGE_EFFICIENCY = 0.9;
+const HOUSE_BATTERY_RESERVE_MARGIN_PERCENT = 5;
+const FORECAST_ENERGY_EPSILON_KWH = 0.05;
 
 // Sonderfälle (decideWallboxAction):
 const SETTLE_MS = 8000;          // nach eigener Schaltung kurz nicht auf „manuell" prüfen
@@ -43,7 +48,11 @@ function surplusPlan(box, surplusW) {
     const setpointW = clamp(available, 0, box.maxPowerW || available);
     return { desiredOn: setpointW >= MIN_CHARGE_W, setpointW };
   }
-  return { desiredOn: available >= SURPLUS_ON_W, setpointW: null };
+  // Ohne Leistungs-Sollwert kann nur binär geschaltet werden. Dann erst starten,
+  // wenn der Überschuss die feste Wallboxleistung deckt; andernfalls würde die
+  // Differenz ungewollt aus Hausakku oder Netz kommen.
+  const binaryThresholdW = Math.max(SURPLUS_ON_W, Number(box.maxPowerW) || 0);
+  return { desiredOn: available >= binaryThresholdW, setpointW: null };
 }
 
 // Pflichtladung mit voller Leistung (Mindest-Ladestand, Immer-voll, Garantie).
@@ -57,36 +66,68 @@ function privatePlan(box, ctx) {
     return { ...fullPowerPlan(box), reason: `Privat: unter Mindest-Ladestand (${box.minChargePercent} %)` };
   }
   if (isFull(ctx.soc)) return { desiredOn: false, setpointW: null, reason: 'Privat: Fahrzeug voll' };
+  // Oberhalb des Mindeststands darf ein kurzer momentaner PV-Peak nicht die
+  // Tagesreserve verbrauchen. Sobald die Prognose heute Netzbedarf oder keine
+  // freie Überschussenergie ausweist, bleibt die flexible Privatladung aus.
+  if (ctx.prognosisAvailable === false) {
+    return { desiredOn: false, setpointW: null,
+      reason: 'Privat: wartet auf vollständige Tagesprognose' };
+  }
+  const forecastOverflow = Number(ctx.prognosisOverflowKwh);
+  if (ctx.prognosisOverflowKwh != null && Number.isFinite(forecastOverflow) &&
+      forecastOverflow <= FORECAST_ENERGY_EPSILON_KWH) {
+    return { desiredOn: false, setpointW: null,
+      reason: 'Privat: Prognose ohne nicht speicherbaren Überschuss' };
+  }
+  const houseSoc = Number(ctx.houseBatterySoc);
+  const houseMinSoc = Number(ctx.houseBatteryMinSoc);
+  if (Number.isFinite(houseSoc) && Number.isFinite(houseMinSoc) &&
+      houseSoc <= houseMinSoc + HOUSE_BATTERY_RESERVE_MARGIN_PERCENT) {
+    return { desiredOn: false, setpointW: null,
+      reason: 'Privat: Hausakku nahe Mindest-SoC' };
+  }
   return { ...surplusPlan(box, ctx.surplusW), reason: 'Privat: nur Überschuss' };
 }
 
 // Beruflichregel: an Arbeitstagen (bzw. am Vorabend) voll bereitstellen. Tagsüber
 // bevorzugt Überschuss, abends Garantieladung, sonst Rückfall auf Privat.
 function businessPlan(box, ctx) {
-  const beforeBusinessDay = isBusinessDay(box, ctx.weekday) || isBusinessDay(box, ctx.tomorrowWeekday);
-  if (!beforeBusinessDay) {
+  const hour = Number(ctx.hour) + (Number(ctx.minute) || 0) / 60;
+  const todayDeadline = isBusinessDay(box, ctx.weekday) && hour < BUSINESS_READY_HOUR;
+  const tomorrowDeadline = isBusinessDay(box, ctx.tomorrowWeekday);
+  if (!todayDeadline && !tomorrowDeadline) {
     return { ...privatePlan(box, ctx), reason: 'Beruflich: freier Tag → Privatregel' };
   }
   if (isFull(ctx.soc)) return { desiredOn: false, setpointW: null, reason: 'Beruflich: Fahrzeug voll' };
-  // Abends/nachts Garantieladung, damit das Auto am Arbeitstag voll bereitsteht —
-  // lieber etwas Reserve als zu knapp.
-  if (ctx.hour >= BUSINESS_FORCE_HOUR) {
-    return { ...fullPowerPlan(box), reason: 'Beruflich: Garantieladung vor Arbeitstag' };
+  const hoursUntilReady = todayDeadline
+    ? BUSINESS_READY_HOUR - hour
+    : 24 - hour + BUSINESS_READY_HOUR;
+  const capacity = Math.max(0, Number(box.batteryCapacityKwh) || 0);
+  const powerKw = Math.max(0, Number(box.maxPowerW) || 0) / 1000;
+  const soc = ctx.soc == null ? 0 : clamp(Number(ctx.soc) || 0, 0, FULL_SOC);
+  const remainingKwh = capacity * Math.max(0, FULL_SOC - soc) / 100;
+  const requiredHours = powerKw > 0
+    ? remainingKwh / (powerKw * CHARGE_EFFICIENCY)
+    : Math.max(0, hoursUntilReady - BUSINESS_FORCE_HOUR);
+  if (hoursUntilReady <= requiredHours + BUSINESS_START_BUFFER_HOURS) {
+    return { ...fullPowerPlan(box),
+      reason: `Beruflich: Garantieladung (${requiredHours.toFixed(1)} h Restladezeit)` };
   }
-  // Tagsüber bevorzugt Überschuss laden, statt nachts den Hausakku zu leeren.
-  const surplus = surplusPlan(box, ctx.surplusW);
-  if (surplus.desiredOn) return { ...surplus, reason: 'Beruflich: Überschuss tagsüber' };
-  return { desiredOn: false, setpointW: null, reason: 'Beruflich: warte auf Überschuss/Abend' };
+  const flexible = privatePlan(box, ctx);
+  if (flexible.desiredOn) return { ...flexible, reason: 'Beruflich: Überschuss vor Garantieladung' };
+  return { desiredOn: false, setpointW: null,
+    reason: `Beruflich: wartet bis spätestens ${Math.max(0, hoursUntilReady - requiredHours - BUSINESS_START_BUFFER_HOURS).toFixed(1)} h vor Ladebeginn` };
 }
 
-// Immer-voll: laden bis voll, sonst aus.
-function fullModePlan(box, ctx) {
-  if (isFull(ctx.soc)) return { desiredOn: false, setpointW: null, reason: 'Immer voll: Fahrzeug voll' };
+// Immer-voll: Ladegerät bleibt aktiv; allein die Priorität darf es sperren.
+function fullModePlan(box) {
   return { ...fullPowerPlan(box), reason: 'Immer voll' };
 }
 
 // Hauptfunktion. ctx: { soc, plugged, surplusW, hour, weekday, tomorrowWeekday,
-// prognosisSurplusKwh }. Liefert { desiredOn, setpointW, priority, reason }.
+// prognosisAvailable, prognosisOverflowKwh, houseBatterySoc,
+// houseBatteryMinSoc }. Liefert
+// { desiredOn, setpointW, priority, reason }.
 //
 // Hinweis: Das „angesteckt"-Signal wird hier bewusst NICHT als Sperre verwendet.
 // Es kommt per Mobilfunk vom Fahrzeug und kann veraltet/falsch-negativ sein – wenn
@@ -104,9 +145,12 @@ function planCharge(box, ctx = {}) {
 // Sonderfälle über dem Basisplan. Mutiert `state` (in-memory je Box) und liefert die
 // effektiv zu schaltende Aktion. Testbar ohne MQTT/DB.
 //
-// state: { output:'on'|'off'|null, changedAt, lastBrokerStatus, manualFull, manualOff,
-//          manualOffDay, chargeStartedAt, restartUntil, restartAttempts }
-// ctx:   { plan, brokerStatus:'on'|'off'|null, powerW, pvPowerW, soc, todayKey,
+// state: { output:'on'|'off'|null, changedAt, lastBrokerStatus,
+//          brokerStatusInitialized, expectedBrokerStatus, manualFull,
+//          manualFullSawCharging, manualOff, manualOffDay, chargeStartedAt,
+//          restartUntil, restartAttempts }
+// ctx:   { plan, brokerStatus:'on'|'off'|null, powerW, pvPowerW,
+//          selfConsumptionW, houseBatterySoc, houseBatteryMinSoc, soc, todayKey,
 //          levelAllows, now }
 // Rückgabe: { on, setpointW, priority, bypassHold, reason }
 function decideWallboxAction(box, state, ctx) {
@@ -115,12 +159,29 @@ function decideWallboxAction(box, state, ctx) {
   const now = ctx.now;
   const settleOk = !state.changedAt || (now - state.changedAt) >= SETTLE_MS;
 
-  // (2)/(3) Manuelle Schaltung am Broker erkennen: ein Statuswechsel, den wir nicht
-  // selbst kommandiert haben (Broker-Status weicht vom zuletzt gesendeten Befehl ab).
-  if (settleOk && ctx.brokerStatus && ctx.brokerStatus !== state.lastBrokerStatus) {
+  // Den ersten Broker-Wert nach einem Prozessstart nur als Ausgangszustand
+  // übernehmen. Andernfalls würde eine bereits laufende Ladung fälschlich als
+  // manuelles Einschalten gelten und bis 99 % weiterladen.
+  // Bestätigt der Broker exakt den zuletzt von der Automatik gesendeten Wert,
+  // ist das nur unser eigener Readback und ausdrücklich kein Nutzerwunsch.
+  const ownReadback = ctx.brokerStatus && state.expectedBrokerStatus === ctx.brokerStatus;
+  if (ownReadback) {
+    state.expectedBrokerStatus = null;
+    state.brokerStatusInitialized = true;
+    state.lastBrokerStatus = ctx.brokerStatus;
+    if (state.output == null) state.output = ctx.brokerStatus;
+  } else if (ctx.brokerStatus && !state.brokerStatusInitialized) {
+    state.brokerStatusInitialized = true;
+    state.lastBrokerStatus = ctx.brokerStatus;
+    if (state.output == null) state.output = ctx.brokerStatus;
+  // (2)/(3) Manuelle Schaltung am Broker erkennen: ein späterer Statuswechsel, den
+  // wir nicht selbst kommandiert haben (Broker-Status weicht vom zuletzt gesendeten
+  // Befehl ab).
+  } else if (settleOk && ctx.brokerStatus && ctx.brokerStatus !== state.lastBrokerStatus) {
     if (ctx.brokerStatus === 'on' && state.output !== 'on') {
       // Manuell EIN → einmalig voll laden, sofern die Modus-Priorität es zulässt.
       if (ctx.levelAllows) state.manualFull = true;
+      state.manualFullSawCharging = false;
       state.manualOff = false;
       state.manualOffDay = '';
     } else if (ctx.brokerStatus === 'off' && state.output === 'on') {
@@ -128,6 +189,7 @@ function decideWallboxAction(box, state, ctx) {
       state.manualOff = true;
       state.manualOffDay = ctx.todayKey;
       state.manualFull = false;
+      state.manualFullSawCharging = false;
       state.restartUntil = 0;
       state.restartAttempts = 0;
     }
@@ -140,8 +202,15 @@ function decideWallboxAction(box, state, ctx) {
 
   // (2) Einmalige Volladung nach manuellem Einschalten.
   if (state.manualFull) {
-    if (ctx.soc != null && ctx.soc >= FULL_SOC) {
+    if (ctx.powerW != null && ctx.powerW >= box.stallPowerW) {
+      state.manualFullSawCharging = true;
+    }
+    const finishedByPower = state.manualFullSawCharging && box.powerTopic &&
+      ctx.powerW != null && ctx.powerW < box.stallPowerW;
+    const finishedByUnplug = ctx.plugged === false;
+    if (finishedByPower || finishedByUnplug) {
       state.manualFull = false;
+      state.manualFullSawCharging = false;
     } else {
       on = true;
       setpointW = box.setpointTopic ? (box.maxPowerW || null) : null;
@@ -149,17 +218,25 @@ function decideWallboxAction(box, state, ctx) {
     }
   }
 
-  // (3) Sperre nach manuellem Ausschalten bis Folgetag + PV > Wallbox-Leistung.
+  // (3) Sperre nach manuellem Ausschalten bis zum Folgetag. Erst wenn PV den
+  // Eigenverbrauch plus feste Wallboxleistung deckt und der Hausakku genügend
+  // Abstand zum Mindest-SoC hat, fällt die Übersteuerung zurück auf Automatik.
   if (state.manualOff) {
-    const released = ctx.todayKey !== state.manualOffDay &&
-      ctx.pvPowerW != null && ctx.pvPowerW > (box.maxPowerW || 0);
+    const houseSoc = Number(ctx.houseBatterySoc);
+    const houseMinSoc = Number(ctx.houseBatteryMinSoc);
+    const batteryReady = Number.isFinite(houseSoc) && Number.isFinite(houseMinSoc) &&
+      houseSoc > houseMinSoc + HOUSE_BATTERY_RESERVE_MARGIN_PERCENT;
+    const pvThreshold = Math.max(0, Number(ctx.selfConsumptionW) || 0) +
+      Math.max(0, Number(box.maxPowerW) || 0);
+    const released = !!state.manualOffDay && ctx.todayKey !== state.manualOffDay &&
+      ctx.pvPowerW != null && ctx.pvPowerW > pvThreshold && batteryReady;
     if (released) {
       state.manualOff = false;
       state.manualOffDay = '';
     } else {
       on = false;
       setpointW = null;
-      reason = 'Manuell ausgeschaltet → wartet auf Folgetag mit PV > Wallbox-Leistung';
+      reason = 'Manuell ausgeschaltet → wartet auf Folgetag, PV-Deckung und Hausakku-Reserve';
     }
   }
 
@@ -179,7 +256,9 @@ function decideWallboxAction(box, state, ctx) {
   // „angesteckt"-Signal sperrt zwar das Laden nicht (Mobilfunk, evtl. falsch-negativ),
   // ein Aus/Ein-Reconnect darf aber nicht ins Leere takten, solange kein Auto bestätigt
   // angesteckt ist. Ohne bestätigtes Anstecken: kein Neustart-Zyklus.
-  if (ctx.plugged === true) {
+  // Ein volles Fahrzeug beendet die Leistungsaufnahme selbst. Das ist kein Stall:
+  // keinen Neustart auslösen und einen bereits laufenden Zyklus sofort verwerfen.
+  if (ctx.plugged === true && !isFull(ctx.soc)) {
     // Laufendes Neustart-Fenster: für 1 Minute zwingend aus.
     if (state.restartUntil && now < state.restartUntil) {
       return { on: false, setpointW: null, priority, bypassHold: true,
@@ -209,7 +288,7 @@ function decideWallboxAction(box, state, ctx) {
       if (ctx.powerW >= box.stallPowerW) state.restartAttempts = 0; // Ladung läuft gesund
     }
   } else {
-    // Nicht (bestätigt) angesteckt: kein laufender Neustart-Zyklus.
+    // Nicht (bestätigt) angesteckt oder bereits voll: kein Neustart-Zyklus.
     state.restartUntil = 0;
     state.restartAttempts = 0;
   }
@@ -228,11 +307,12 @@ function predictNextChargeStart(box, state, opts = {}) {
   if (isCharging || full) return null;
   if (!Array.isArray(series) || !series.length) return null;
 
-  // Nach manuellem Ausschalten erst am Folgetag, sobald die PV-Leistung die
-  // Wallbox-Maximalleistung übersteigt (siehe decideWallboxAction).
+  // Nach manuellem Ausschalten erst am Folgetag, sobald der prognostizierte
+  // PV-Überschuss die Wallbox-Maximalleistung übersteigt. Die Hausakku-Reserve
+  // wird zusätzlich live in decideWallboxAction geprüft.
   if (state.manualOff) {
     for (const slot of series) {
-      if (slot.dateKey !== state.manualOffDay && slot.pvW > (box.maxPowerW || 0)) {
+      if (slot.dateKey !== state.manualOffDay && slot.surplusW > (box.maxPowerW || 0)) {
         return { at: Math.max(nowMs, slot.startMs), hour: slot.hour };
       }
     }
@@ -240,7 +320,9 @@ function predictNextChargeStart(box, state, opts = {}) {
   }
 
   // Überschuss-Kandidat: erste Stunde mit ausreichend erwartetem Überschuss.
-  const startThresholdW = box.setpointTopic ? MIN_CHARGE_W : SURPLUS_ON_W;
+  const startThresholdW = box.setpointTopic
+    ? MIN_CHARGE_W
+    : Math.max(SURPLUS_ON_W, Number(box.maxPowerW) || 0);
   let surplus = null;
   for (const slot of series) {
     if (slot.surplusW >= startThresholdW) { surplus = slot; break; }
@@ -261,5 +343,7 @@ function predictNextChargeStart(box, state, opts = {}) {
 module.exports = {
   planCharge, decideWallboxAction, predictNextChargeStart, priorityForMode, isBusinessDay,
   FULL_SOC, SURPLUS_ON_W, MIN_CHARGE_W, BUSINESS_FORCE_HOUR,
+  BUSINESS_READY_HOUR, BUSINESS_START_BUFFER_HOURS, CHARGE_EFFICIENCY,
+  HOUSE_BATTERY_RESERVE_MARGIN_PERCENT, FORECAST_ENERGY_EPSILON_KWH,
   SETTLE_MS, RESTART_OFF_MS, STALL_EXPECT_MIN_W, MAX_RESTART_ATTEMPTS,
 };

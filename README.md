@@ -127,16 +127,20 @@ Bedienung über ein Web-Dashboard mit vorgeschaltetem Login.
     Zähler-Topic aus der Leistung abgeleitet. Fehlt das SoC-Topic, wird der
     Ladezustand aus der seit Einstecken geladenen Energie geschätzt.
   - **Drei Lademodi** (Privat / Beruflich / Immer voll) mit je eigener Priorität:
-    Privat lädt bis zum Mindest-Ladestand, darüber nur PV-Überschuss; Beruflich
-    stellt das Auto an gewählten Wochentagen vorausschauend voll bereit; Immer
-    voll lädt durchgehend. Mit Soll-Leistungs-Topic wird gegen den Überschuss
-    fein moduliert. Optionaler **Modus-Sync** über ein eigenes Topic.
+    Privat lädt bis zum Mindest-Ladestand, darüber nur prognostizierten, vom
+    Hausakku nicht mehr speicherbaren PV-Überschuss; Beruflich berechnet aus
+    Fahrzeug-SoC, Akkugröße und Ladeleistung den rechtzeitigen Start für 06:00 Uhr
+    an gewählten Arbeitstagen; Immer voll lässt das Ladegerät aktiviert. Mit
+    Soll-Leistungs-Topic wird vorsichtig gegen den Live-Überschuss moduliert;
+    ohne Sollwert startet die Box erst bei vollständig gedeckter Ladeleistung.
+    Optionaler **Modus-Sync** über ein eigenes Topic.
   - Als **Verbraucher am Betriebslevel-Handler** angemeldet (Priorität des aktiven
     Modus): Einschalten nur nach Freigabe, Zwangsabschaltung bei Levelabfall.
   - **Sonderfälle**: hängt der Ladestart trotz Befehl unter der Leerlaufschwelle, wird
     nach einer konfigurierbaren Vorgabezeit kurz aus-/eingeschaltet; manuelles Einschalten
-    am Broker löst eine einmalige Volladung aus; manuelles Ausschalten hält bis zum
-    Folgetag (PV-Leistung erstmals über Wallbox-Leistung) an; das unzuverlässige
+    am Broker löst eine einmalige Volladung bis Leistungsabfall oder Abziehen aus;
+    manuelles Ausschalten hält bis zum Folgetag mit vollständiger PV-Deckung und
+    ausreichender Hausakku-Reserve an; das unzuverlässige
     „angesteckt"-Signal sperrt das Laden nicht.
   - Die Prognose führt je Wallbox getrennte Tages- und Stundenstatistiken nach
     Wochentag. Gemessene Ladeenergie wird aus dem allgemeinen Hausverbrauch

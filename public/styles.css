@@ -929,6 +929,21 @@ h2 .cmd-confirm { font-size: 13px; vertical-align: middle; }
     font-size: 16px;
 }
 
+.wallbox-switch-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 8px;
+    flex-wrap: wrap;
+}
+
+.wallbox-switch-label {
+    width: 64px;
+    color: #64748b;
+    font-size: 12px;
+    font-weight: 600;
+}
+
 .plant-main {
     display: flex;
     justify-content: space-between;

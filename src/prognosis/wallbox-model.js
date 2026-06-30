@@ -152,6 +152,7 @@ function addPlannedEnergy(box, slots, amountKwh, surplusOnly) {
     if (!(take > 0)) continue;
     box.plannedHourlyByDate[slot.dateKey][slot.hour] += take;
     box.plannedEnergyByDate[slot.dateKey] += take;
+    if (surplusOnly) box.plannedFlexibleEnergyByDate[slot.dateKey] += take;
     slot.surplusRemainingKwh = Math.max(0, slot.surplusRemainingKwh - take);
     remaining -= take;
   }
@@ -161,18 +162,46 @@ function addPlannedEnergy(box, slots, amountKwh, surplusOnly) {
 // Gemeinsamer Vorausplan für Prognose und Wallbox-Automatik. Pflichtladungen
 // werden fest eingeplant; reine Überschussladungen teilen sich den freien
 // PV-Überschuss nach Verbraucherpriorität, sodass er nicht mehrfach vergeben wird.
-function planWallboxSchedule(model, slots = []) {
+function initializeOverflow(slots, storage = null) {
+  if (!storage || !Number.isFinite(Number(storage.capacityKwh))) {
+    for (const slot of slots) {
+      slot.surplusRemainingKwh = Math.max(0, Number(slot.pvKwh) - Number(slot.houseKwh));
+    }
+    return;
+  }
+  const capacity = Math.max(0, Number(storage.capacityKwh));
+  const minSoc = Math.max(0, Math.min(100, Number(storage.minSoc) || 0));
+  const soc = Math.max(minSoc, Math.min(100, Number(storage.soc) || minSoc));
+  const usable = capacity * (1 - minSoc / 100);
+  let stored = Math.max(0, Math.min(usable, capacity * (soc - minSoc) / 100));
+  const chargeEfficiency = Math.max(0.01, Math.min(1, Number(storage.chargeEfficiency) || 0.9));
+  const dischargeEfficiency = Math.max(0.01, Math.min(1, Number(storage.dischargeEfficiency) || 0.9));
+  for (const slot of slots) {
+    const balance = Number(slot.pvKwh) - Number(slot.houseKwh);
+    slot.surplusRemainingKwh = 0;
+    if (balance >= 0) {
+      const chargeInput = Math.min(balance, Math.max(0, (usable - stored) / chargeEfficiency));
+      stored += chargeInput * chargeEfficiency;
+      slot.surplusRemainingKwh = Math.max(0, balance - chargeInput);
+    } else {
+      const shortfall = -balance;
+      const supplied = Math.min(shortfall, stored * dischargeEfficiency);
+      stored -= supplied / dischargeEfficiency;
+    }
+  }
+}
+
+function planWallboxSchedule(model, slots = [], storage = null) {
   if (!model || !Array.isArray(model.boxes) || !slots.length) return model;
   const dateKeys = [...new Set(slots.map((slot) => slot.dateKey))];
   const slotsByDate = new Map(dateKeys.map((key) => [key, slots.filter((slot) => slot.dateKey === key)]));
-  for (const slot of slots) {
-    slot.surplusRemainingKwh = Math.max(0, Number(slot.pvKwh) - Number(slot.houseKwh));
-  }
+  initializeOverflow(slots, storage);
 
   const ordered = [...model.boxes].sort((a, b) => a.priority - b.priority || a.id - b.id);
   for (const box of ordered) {
     box.plannedHourlyByDate = Object.fromEntries(dateKeys.map((key) => [key, Array(24).fill(0)]));
     box.plannedEnergyByDate = Object.fromEntries(dateKeys.map((key) => [key, 0]));
+    box.plannedFlexibleEnergyByDate = Object.fromEntries(dateKeys.map((key) => [key, 0]));
     const capacity = Math.max(0, Number(box.batteryCapacityKwh) || 0);
     const soc = Number.isFinite(box.soc) ? Math.max(0, Math.min(FULL_SOC, box.soc)) : null;
     const energyToFull = soc == null ? null : capacity * Math.max(0, FULL_SOC - soc) / 100;
@@ -190,7 +219,7 @@ function planWallboxSchedule(model, slots = []) {
       // Der Live-SoC gehört zum aktuell angeschlossenen Fahrzeug und ersetzt
       // daher nur den heutigen statistischen Bedarf.
       if (dayIndex === 0 && energyToFull != null) {
-        desired = Math.min(energyToFull, Math.max(learned, energyToMinimum));
+        desired = box.mode === 1 ? energyToFull : Math.min(energyToFull, Math.max(learned, energyToMinimum));
         if (box.mode === 3) {
           desired = energyToFull;
           mandatory = desired;

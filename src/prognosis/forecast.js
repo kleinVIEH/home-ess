@@ -268,7 +268,7 @@ function elapsedDayCount(localDate) {
   return Math.max(0, Math.round((current - start) / 86400000));
 }
 
-async function buildConsumptionModel(db, strom, config, cache, forecast = null) {
+async function buildConsumptionModel(db, strom, config, cache, forecast = null, storage = null) {
   const mqttConfig = await new Promise((resolve) => loadMqttConfig(db, resolve));
   const calendar = localCalendar(cache, mqttConfig.timezone, new Date());
   const local = {
@@ -444,7 +444,7 @@ async function buildConsumptionModel(db, strom, config, cache, forecast = null) 
   planWallboxSchedule(wallboxModel, buildWallboxPlanningSlots({
     forecast, local, remainingByHour, profilesByWeekday, dailyTargetsByWeekday,
     profile: currentProfile, dailyTarget, coolingModel,
-  }));
+  }), storage);
 
   let recentHourKwh = null;
   if (currentHourEnergy != null && previousHourEnergy != null) {
@@ -751,8 +751,14 @@ async function computePrognosis(db, cache, { allowFetch = false } = {}) {
     readStromverbrauchValues(db, cache),
   ]);
   const forecast = await computePvForecast(db, plants, { allowFetch, cache }).catch(() => null);
-  const model = await buildConsumptionModel(db, strom, config, cache, forecast);
   const batteryData = readBatterieData(cache);
+  const model = await buildConsumptionModel(db, strom, config, cache, forecast, {
+    capacityKwh: batteryCapacityKwh(batteryConfig),
+    minSoc: num(batteryData.minSoc) ?? num(batteryConfig.minSoc) ?? 20,
+    soc: num(batteryData.soc) ?? num(batteryConfig.minSoc) ?? 20,
+    chargeEfficiency: config.chargeEfficiency / 100,
+    dischargeEfficiency: config.dischargeEfficiency / 100,
+  });
   const simulation = simulateDays({ forecast, model, config, batteryConfig, batteryData });
   return {
     config, forecast, model, battery: batteryData, simulation,

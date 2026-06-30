@@ -37,6 +37,7 @@ function enrichWithNextCharge(values) {
     const seconds = nc ? Math.max(0, Math.round((nc.at - Date.now()) / 1000)) : null;
     return {
       ...v,
+      controlMode: wallboxAutomation.getControlMode(v.id),
       nextChargeSeconds: seconds,
       formatted: { ...v.formatted, nextCharge: nc ? formatNextCharge(seconds, nc.hour) : '—' },
     };
@@ -168,6 +169,21 @@ function wallboxRoutes(db) {
       if (box) await wallboxAutomation.applyModeChange(db, box);
       await wallboxAutomation.runNow(db).catch(() => {});
       res.json({ ok: true, mode });
+    } catch (err) { next(err); }
+  });
+
+  // Manuelle Übersteuerung: Automatik / dauerhaft Aus / einmalig Vollladen.
+  router.post('/wallbox/box/:id/control/:control', requireAuth, requireWallboxEnabled, async (req, res, next) => {
+    try {
+      const id = Number(req.params.id);
+      const control = String(req.params.control || '');
+      if (!['auto', 'off', 'full'].includes(control)) {
+        return res.status(400).json({ error: 'Ungültige Wallbox-Steuerung.' });
+      }
+      if (!await getWallbox(db, id)) return res.status(404).json({ error: 'Wallbox nicht gefunden.' });
+      const controlMode = wallboxAutomation.setControlMode(id, control);
+      await wallboxAutomation.runNow(db);
+      res.json({ ok: true, controlMode });
     } catch (err) { next(err); }
   });
 

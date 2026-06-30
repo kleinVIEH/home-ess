@@ -16,7 +16,10 @@ const { readStromverbrauchValues } = require('../stromverbrauch/aggregation');
 const { readBatterieData, loadBatterieConfig } = require('../batterie/config');
 const { listPvPlants } = require('../photovoltaik/plants');
 const { readPhotovoltaikValues } = require('../photovoltaik/aggregation');
-const { planCharge, decideWallboxAction, predictNextChargeStart, FULL_SOC } = require('./planner');
+const {
+  planCharge, decideWallboxAction, predictNextChargeStart, FULL_SOC,
+  HOUSE_BATTERY_RESERVE_MARGIN_PERCENT,
+} = require('./planner');
 const { computePrognosis } = require('../prognosis/forecast');
 
 const HOLD_MS = 2 * 60 * 1000;        // Mindesthaltedauer für An/Aus-Wechsel
@@ -33,7 +36,9 @@ function boxState(id) {
   if (!s) {
     s = {
       output: null, changedAt: 0, setpointW: null, lastModeSync: null,
-      lastBrokerStatus: null, manualFull: false, manualOff: false, manualOffDay: '',
+      lastBrokerStatus: null, brokerStatusInitialized: false, expectedBrokerStatus: null,
+      manualFull: false, manualFullSawCharging: false,
+      manualOff: false, manualOffDay: '', lastTodayKey: '',
       chargeStartedAt: null, restartUntil: 0, restartAttempts: 0,
       nextChargeAt: null, nextChargeHour: null,
     };
@@ -42,16 +47,18 @@ function boxState(id) {
   return s;
 }
 
-// Broker-bestätigter Schaltzustand einer Box: 'on' | 'off' | null (kein Wert).
-// Quelle ist das Status-Topic bzw. – falls nicht gesetzt – das Steuer-Topic.
-function readBrokerStatus(cache, box) {
-  const entry = cache.get(cacheKey(box.id, 'status'));
+// Broker-bestätigter Bedienwert am Steuer-Topic. Nur dieser Kanal darf manuelle
+// Nutzerwünsche auslösen; das Status-Topic ist ein reiner Ist-Zustand.
+function readBrokerCommand(cache, box) {
+  const entry = cache.get(cacheKey(box.id, 'command'));
   if (!entry || entry.value == null || entry.value === '') return null;
   return parseBool(entry.value) ? 'on' : 'off';
 }
 
-function sendCommand(topic, on) {
-  if (topic) mqttClient.publish(topic, on ? '1' : '0');
+function sendCommand(box, stateForBox, on) {
+  if (!box.commandTopic) return;
+  stateForBox.expectedBrokerStatus = on ? 'on' : 'off';
+  mqttClient.publish(box.commandTopic, on ? '1' : '0');
 }
 function sendSetpoint(topic, watt) {
   if (topic && watt != null) mqttClient.publish(topic, String(Math.round(watt)));
@@ -106,16 +113,26 @@ function buildSurplusSeries(forecast, model, calendar, nowMs) {
 
 // Aktuell verfügbare Überschussleistung im Haus (W): Netzeinspeisung plus
 // Batterie-Ladeleistung, solange der Hausakku über dem Mindest-SoC liegt.
-function houseSurplusWatt(strom, battery, batteryMinSoc) {
+function houseSurplusWatt(strom, battery, batteryMinSoc, wallboxPowerW = 0) {
   const netzbezug = parseNumber(strom.netzbezugPower); // positiv = Bezug
-  let surplus = netzbezug != null ? Math.max(0, -netzbezug) : 0;
+  // Den Netzsaldo erst NACH dem Zurückrechnen der eigenen Wallbox-Leistung auf 0
+  // begrenzen. Sonst wird z. B. 2,3 kW Netzbezug zunächst verworfen und die
+  // gleichzeitig gemessene Wallbox-Leistung anschließend fälschlich als voller
+  // PV-Überschuss gewertet – eine laufende Ladung hielte sich dadurch selbst an.
+  let surplus = netzbezug != null ? -netzbezug : 0;
+  surplus += Math.max(0, parseNumber(wallboxPowerW) || 0);
   const battPower = parseNumber(battery.power);        // positiv = laden
   const soc = parseNumber(battery.soc);
   const minSoc = parseNumber(battery.minSoc) ?? batteryMinSoc;
-  if (battPower != null && battPower > 0 && soc != null && minSoc != null && soc > minSoc) {
-    surplus += battPower;
+  if (battPower != null) {
+    // Entladung immer gegenrechnen: Eine laufende Wallbox darf sich nicht durch
+    // Leistung aus dem Hausakku selbst als Überschuss erhalten. Ladeleistung des
+    // Hausakkus erst oberhalb einer Reservezone vorsichtig für das Auto freigeben.
+    if (battPower < 0) surplus += battPower;
+    else if (battPower > 0 && soc != null && minSoc != null &&
+        soc > minSoc + HOUSE_BATTERY_RESERVE_MARGIN_PERCENT) surplus += battPower;
   }
-  return surplus;
+  return Math.max(0, surplus);
 }
 
 // Modus-Sync-Topic: einen extern gesetzten Modus übernehmen (ohne Rückschreiben).
@@ -157,8 +174,6 @@ async function tick(db) {
   const strom = await readStromverbrauchValues(db, cache).catch(() => ({ netzbezugPower: null }));
   const battery = readBatterieData(cache);
   const batterieConfig = await new Promise((resolve) => loadBatterieConfig(db, resolve));
-  const surplusW = houseSurplusWatt(strom, battery, batterieConfig.minSoc);
-
   // Live-PV-Gesamtleistung (für die Freigabe nach manuellem Ausschalten).
   let pvPowerW = null;
   try {
@@ -168,12 +183,17 @@ async function tick(db) {
 
   // Prognose einmalig (cache-only); für die vorausschauende Bewertung verfügbar.
   const prognosis = await computePrognosis(db, cache, { allowFetch: false }).catch(() => null);
-  const prognosisSurplusKwh = prognosis && prognosis.simulation && prognosis.simulation.days &&
-    prognosis.simulation.days[0] ? Number(prognosis.simulation.days[0].surplusKwh) : null;
+  const prognosisAvailable = Boolean(prognosis && prognosis.simulation && prognosis.simulation.available);
   const surplusSeries = prognosis ? buildSurplusSeries(prognosis.forecast, prognosis.model, calendar, now) : [];
   const forecastPlanById = new Map(
     (((prognosis || {}).model || {}).wallboxModel?.boxes || [])
       .map((plannedBox) => [Number(plannedBox.id), plannedBox.nextCharge])
+  );
+  const forecastOverflowById = new Map(
+    ((((prognosis || {}).model || {}).wallboxModel?.boxes || []).map((plannedBox) => [
+      Number(plannedBox.id),
+      Number((plannedBox.plannedFlexibleEnergyByDate || {})[calendar.dateKey]) || 0,
+    ]))
   );
 
   const values = await readWallboxValues(db, cache, boxes);
@@ -182,6 +202,7 @@ async function tick(db) {
 
   for (const box of boxes) {
     const s = boxState(box.id);
+    s.lastTodayKey = calendar.dateKey;
     const live = valueById.get(box.id) || {};
     const id = consumerId(box);
     seen.add(id);
@@ -189,11 +210,17 @@ async function tick(db) {
     const ctx = {
       soc: live.soc,
       plugged: live.plugged,
-      surplusW: surplusW + (live.powerW || 0), // eigene Ladeleistung als verfügbar zurückrechnen
+      // Eigene Ladeleistung zurückrechnen, ohne dabei vorhandenen Netzbezug zu
+      // verlieren (siehe houseSurplusWatt).
+      surplusW: houseSurplusWatt(strom, battery, batterieConfig.minSoc, live.powerW),
       hour: calendar.hours,
+      minute: calendar.minutes,
       weekday: weekdayMonZero(calendar.dateKey),
       tomorrowWeekday: tomorrowWeekdayMonZero(calendar.dateKey),
-      prognosisSurplusKwh,
+      prognosisAvailable,
+      prognosisOverflowKwh: forecastOverflowById.get(Number(box.id)) ?? null,
+      houseBatterySoc: parseNumber(battery.soc),
+      houseBatteryMinSoc: parseNumber(battery.minSoc) ?? batterieConfig.minSoc,
     };
     const plan = planCharge(box, ctx);
 
@@ -210,9 +237,12 @@ async function tick(db) {
     // Sonderfälle (manuelle Schaltung, Ladestart-Neustart, Level-Gate) anwenden.
     const decision = decideWallboxAction(box, s, {
       plan,
-      brokerStatus: readBrokerStatus(cache, box),
+      brokerStatus: readBrokerCommand(cache, box),
       powerW: live.powerW,
       pvPowerW,
+      selfConsumptionW: parseNumber(strom.eigenverbrauchPower),
+      houseBatterySoc: parseNumber(battery.soc),
+      houseBatteryMinSoc: parseNumber(battery.minSoc) ?? batterieConfig.minSoc,
       soc: live.soc,
       plugged: live.plugged,
       todayKey: calendar.dateKey,
@@ -234,7 +264,7 @@ async function tick(db) {
     if (s.output !== desired) {
       const holdOk = decision.bypassHold || s.changedAt === 0 || now - s.changedAt >= HOLD_MS;
       if (desired === 'off' || holdOk) {
-        sendCommand(box.commandTopic, decision.on);
+        sendCommand(box, s, decision.on);
         s.output = desired;
         s.changedAt = now;
         if (!decision.on) s.setpointW = null;
@@ -280,11 +310,34 @@ async function tick(db) {
 // Sofort-Abschaltung auf Anforderung des Betriebslevel-Handlers (Level gesunken).
 function forceOff(box) {
   if (!box.commandTopic) return;
-  sendCommand(box.commandTopic, false);
   const s = boxState(box.id);
+  sendCommand(box, s, false);
   s.output = 'off';
   s.changedAt = Date.now();
   s.setpointW = null;
+}
+
+// Sichtbare manuelle Übersteuerung je Wallbox. MQTT-Schaltänderungen im laufenden
+// Betrieb nutzen dieselben Zustände; der erste Readback nach einem Neustart nicht.
+function getControlMode(boxId) {
+  const s = state.get(Number(boxId));
+  if (!s) return 'auto';
+  if (s.manualOff) return 'off';
+  if (s.manualFull) return 'full';
+  return 'auto';
+}
+
+function setControlMode(boxId, mode) {
+  const normalized = ['auto', 'off', 'full'].includes(mode) ? mode : 'auto';
+  const s = boxState(Number(boxId));
+  s.manualFull = normalized === 'full';
+  s.manualFullSawCharging = false;
+  s.manualOff = normalized === 'off';
+  s.manualOffDay = normalized === 'off' ? s.lastTodayKey : '';
+  s.restartUntil = 0;
+  s.restartAttempts = 0;
+  if (normalized !== 'full') s.chargeStartedAt = null;
+  return getControlMode(boxId);
 }
 
 // Voraussichtlicher nächster Ladebeginn einer Box: { at: ms, hour } oder null.
@@ -317,4 +370,7 @@ function init(db) {
   runNow(db).catch(() => {});
 }
 
-module.exports = { init, runNow, tick, applyModeChange, getNextCharge, houseSurplusWatt };
+module.exports = {
+  init, runNow, tick, applyModeChange, getNextCharge, houseSurplusWatt,
+  getControlMode, setControlMode,
+};

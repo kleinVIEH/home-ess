@@ -271,6 +271,9 @@ function cacheKey(id, suffix) {
 function buildWallboxStateDefinitions(boxes) {
   const defs = [];
   for (const box of boxes || []) {
+    // Das Steuer-Topic separat abonnieren: nur Änderungen hier können als
+    // Bedienwunsch gelten. Automatik-Readbacks werden in automation.js abgefangen.
+    if (box.commandTopic) defs.push({ id: cacheKey(box.id, 'command'), topic: box.commandTopic });
     if (box.statusTopic) defs.push({ id: cacheKey(box.id, 'status'), topic: box.statusTopic });
     if (box.powerTopic) defs.push({ id: cacheKey(box.id, 'power'), topic: box.powerTopic });
     if (box.counterTopic) defs.push({ id: cacheKey(box.id, 'counter'), topic: box.counterTopic });

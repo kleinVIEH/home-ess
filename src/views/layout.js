@@ -2,6 +2,7 @@
 
 const { escapeHtml } = require('./components');
 const { getEnabledNavItems } = require('../modules');
+const { statePickerModal, statePickerScript, statePickerAutoAttach } = require('./state-picker');
 
 // Gemeinsame App-Hülle (Header + Sidebar) für alle authentifizierten Seiten.
 // Kernseiten stehen fest; optionale Module fügen sich über getEnabledNavItems()
@@ -12,7 +13,9 @@ const NAV_CORE = [
   { path: '/photovoltaik', label: 'Photovoltaik', section: 'main' },
   { path: '/batterie', label: 'Batterie', section: 'main' },
   { path: '/prognose', label: 'Prognose', section: 'main' },
+  { path: '/states', label: 'States', section: 'main' },
   { path: '/output', label: 'Output', section: 'main' },
+  { path: '/adapter', label: 'Adapter', section: 'footer' },
   { path: '/module', label: 'Module', section: 'footer' },
   { path: '/settings', label: 'Einstellungen', section: 'footer' },
 ];
@@ -177,8 +180,13 @@ function renderLayout({ title, activePath = '', body = '', script = '' } = {}) {
 ${body}
       </main>
     </div>
+${statePickerModal()}
   </div>
 ${renderLiveScript()}
+  <script>
+${statePickerScript()}
+${statePickerAutoAttach()}
+  </script>
 ${script ? `  <script>\n${script}\n  </script>` : ''}
 </body>
 </html>`;

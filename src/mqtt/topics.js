@@ -5,8 +5,14 @@
 // Notation, eingebettete Slashes, Command-Topics) für Lese- und Schreibpfade.
 
 function normalizeMqttTopic(topic) {
-  return String(topic || '')
-    .trim()
+  const text = String(topic || '').trim();
+  // Adapter-Schema-Topics (prefix://instanz/adresse) NICHT wie Broker-Topics
+  // normalisieren: das Kollabieren doppelter Slashes würde das "://" des Schemas
+  // zu ":/" zerstören, sodass es nicht mehr als Adapter-Topic erkannt und
+  // fälschlich über den Broker geroutet wird (→ kein Wert). Kanonische Form zurück.
+  const scheme = parseSchemeTopic(text);
+  if (scheme) return buildSchemeTopic(scheme.scheme, scheme.instance, scheme.address);
+  return text
     .replace(/^\/+/, '') // kein führender Slash
     .replace(/\/+/g, '/'); // keine doppelten Slashes
 }
@@ -64,6 +70,32 @@ function mqttSubscribeCandidates(configuredTopic) {
   return Array.from(candidates);
 }
 
+// Adapter-Schema-Topics: prefix://instanz/adresse. Der Prefix (Schema) wird beim
+// Adapter registriert, die Instanz ist der benannte Adapter-Lauf, die Adresse der
+// gerätespezifische State-Pfad. Gibt { scheme, instance, address } zurück oder
+// null, wenn kein Schema-Topic vorliegt. Normale ioBroker-Topics (Punkt-/Slash-
+// Notation ohne "://") liefern null und laufen weiter über den Broker.
+function parseSchemeTopic(topic) {
+  const text = String(topic == null ? '' : topic).trim();
+  const match = text.match(/^([a-z][a-z0-9_-]*):\/\/([^/]+)(?:\/(.*))?$/i);
+  if (!match) return null;
+  return {
+    scheme: match[1].toLowerCase(),
+    instance: match[2],
+    address: match[3] || '',
+  };
+}
+
+function isSchemeTopic(topic) {
+  return parseSchemeTopic(topic) != null;
+}
+
+// Kanonisches Schema-Topic aus seinen Bestandteilen zusammensetzen.
+function buildSchemeTopic(scheme, instance, address) {
+  const base = `${String(scheme).toLowerCase()}://${instance}`;
+  return address ? `${base}/${address}` : base;
+}
+
 function isCommandTopic(topic) {
   const upper = normalizeMqttTopic(topic).toUpperCase();
   return upper.endsWith('.SET') || upper.endsWith('/SET') || upper.endsWith('_SET');
@@ -114,6 +146,9 @@ module.exports = {
   mqttReadCandidates,
   mqttSlashStateWildcard,
   mqttSubscribeCandidates,
+  parseSchemeTopic,
+  isSchemeTopic,
+  buildSchemeTopic,
   isCommandTopic,
   unwrapMqttMessage,
   unwrapMqttPayload,

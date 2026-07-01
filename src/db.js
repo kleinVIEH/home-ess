@@ -130,7 +130,9 @@ function openDatabase() {
     db.run(
       `CREATE TABLE IF NOT EXISTS dashboard_widgets (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        source_id TEXT NOT NULL,
+        source_id TEXT NOT NULL DEFAULT '',
+        type TEXT NOT NULL DEFAULT 'value',
+        config TEXT,
         group_id INTEGER,
         position INTEGER NOT NULL DEFAULT 0
       )`
@@ -379,6 +381,36 @@ function openDatabase() {
       )`
     );
     db.run('CREATE INDEX IF NOT EXISTS idx_wallbox_daily_day ON wallbox_daily_consumption (day_key, completed)');
+    // Adapter-Instanzen: je Zeile eine benannte Instanz eines Adapters (aus
+    // /adapter/<adapter_id>). settings hält die instanzeigenen Einstellungen als
+    // JSON. Es wird stets auf dieselben Adapterdateien zugegriffen.
+    db.run(
+      `CREATE TABLE IF NOT EXISTS adapter_instances (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        adapter_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 0,
+        settings TEXT NOT NULL DEFAULT '{}',
+        position INTEGER NOT NULL DEFAULT 0
+      )`
+    );
+    // Letzter bekannter States-Katalog je Instanz (vom Adapter gemeldet). Dient
+    // der States-Seite und dem State-Picker, auch wenn der Adapter gerade nicht
+    // läuft. last_value ist nur eine Momentaufnahme; Live-Werte kommen aus dem Bus.
+    db.run(
+      `CREATE TABLE IF NOT EXISTS adapter_states (
+        instance_id INTEGER NOT NULL,
+        address TEXT NOT NULL,
+        name TEXT NOT NULL DEFAULT '',
+        category TEXT NOT NULL DEFAULT '',
+        unit TEXT NOT NULL DEFAULT '',
+        writable INTEGER NOT NULL DEFAULT 0,
+        last_value TEXT,
+        updated_at INTEGER,
+        PRIMARY KEY (instance_id, address),
+        FOREIGN KEY (instance_id) REFERENCES adapter_instances(id) ON DELETE CASCADE
+      )`
+    );
 
     seedUser(db);
     seedMqttConfig(db);
@@ -631,6 +663,14 @@ function migrateDashboardWidgets(db) {
     }
     if (!existing.has('position')) {
       db.run('ALTER TABLE dashboard_widgets ADD COLUMN position INTEGER NOT NULL DEFAULT 0');
+    }
+    // Widgets erhielten nachträglich einen Typ (value/info) und eine freie
+    // Konfiguration (JSON, z. B. die gewählten Felder der Info-Kachel).
+    if (!existing.has('type')) {
+      db.run("ALTER TABLE dashboard_widgets ADD COLUMN type TEXT NOT NULL DEFAULT 'value'");
+    }
+    if (!existing.has('config')) {
+      db.run('ALTER TABLE dashboard_widgets ADD COLUMN config TEXT');
     }
   });
 }

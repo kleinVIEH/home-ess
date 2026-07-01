@@ -13,6 +13,8 @@ function renderDashboard({
   groupsForSelect = [],
   groupWidths = [],
   internalValues = [],
+  infoFields = [],
+  systemInfo = {},
   formMessage = '',
   formError = '',
   dialogMode = '',
@@ -22,11 +24,10 @@ function renderDashboard({
   groupDialogOpen = false,
   groupDialogError = '',
 } = {}) {
-  const hasAnything = ungrouped.length || groups.length;
+  const renderCard = (widget) => renderWidgetCard(widget, { infoFields, systemInfo });
   const body = `        <div class="panel-head">
           <div>
             <h1>Dashboard</h1>
-            <p class="muted">Live-Werte als Kacheln. Per Drag-Griff (oben links) anordnen und in Gruppen ziehen.</p>
           </div>
           <div class="dashboard-toolbar">
             <button type="button" class="secondary-button" onclick="openGroupDialog('add')">Gruppe hinzufuegen</button>
@@ -37,24 +38,24 @@ function renderDashboard({
         ${statusText(formMessage, 'success')}
         ${groupDialogError ? statusText(groupDialogError) : ''}
 
-        ${hasAnything ? '' : '<div class="info-card"><p class="muted">Noch nichts angelegt. Ueber „Widget hinzufuegen" einen Wert auswaehlen oder „Gruppe hinzufuegen".</p></div>'}
-
         <div class="widget-dropzone widget-grid" data-group="">
-${ungrouped.map(renderWidgetCard).join('\n')}
+${ungrouped.map(renderCard).join('\n')}
         </div>
 
         <div class="widget-groups" id="groupsContainer">
-${groups.map(renderGroup).join('\n')}
+${groups.map((group) => renderGroup(group, { infoFields, systemInfo })).join('\n')}
         </div>
 
-        ${renderWidgetDialog({ internalValues, groupsForSelect })}
+        ${renderWidgetDialog({ internalValues, groupsForSelect, infoFields })}
         ${renderGroupDialog({ groupWidths })}
         ${renderDeleteWidgetDialog()}
         ${renderDeleteGroupDialog()}`;
 
   const clientWidgets = [...ungrouped, ...groups.flatMap((group) => group.widgets)].map((widget) => ({
     id: widget.id,
+    type: widget.type || 'value',
     sourceId: widget.sourceId,
+    infoFields: widget.infoFields || null,
     groupId: widget.groupId == null ? '' : widget.groupId,
   }));
 
@@ -87,14 +88,36 @@ ${groups.map(renderGroup).join('\n')}
       } else {
         form.action = '/dashboard/widgets';
         title.textContent = 'Widget hinzufuegen';
-        setWidgetFormValues({ sourceId: '', groupId: '' });
+        setWidgetFormValues({ type: 'value', sourceId: '', groupId: '', infoFields: null });
       }
       if (typeof dialog.showModal === 'function') dialog.showModal();
     }
 
+    // Tab/Typ umschalten: versteckten Typ setzen, aktive Registerkarte markieren
+    // und das passende Panel zeigen.
+    function setWidgetType(type) {
+      var input = document.getElementById('widgetType');
+      if (input) input.value = type;
+      var tabs = document.querySelectorAll('#widgetDialog .dialog-tab');
+      for (var i = 0; i < tabs.length; i++) {
+        tabs[i].classList.toggle('is-active', tabs[i].getAttribute('data-tab') === type);
+      }
+      var panels = document.querySelectorAll('#widgetDialog .tab-panel');
+      for (var j = 0; j < panels.length; j++) {
+        panels[j].hidden = panels[j].getAttribute('data-panel') !== type;
+      }
+    }
+
     function setWidgetFormValues(values) {
+      setWidgetType(values.type || 'value');
       valueCatalogSync('widgetSourceId', values.sourceId || '');
       document.getElementById('widgetGroupId').value = values.groupId == null ? '' : String(values.groupId);
+      // Info-Felder: ohne Vorgabe (Neuanlage) sind alle aktiv.
+      var selected = values.infoFields || null;
+      var boxes = document.querySelectorAll('#widgetDialog input[name="infoFields"]');
+      for (var i = 0; i < boxes.length; i++) {
+        boxes[i].checked = selected ? selected.indexOf(boxes[i].value) !== -1 : true;
+      }
     }
 
     function closeWidgetDialog() {
@@ -376,9 +399,25 @@ ${groups.map(renderGroup).join('\n')}
           var node = document.getElementById('widget-value-' + widget.id);
           if (node) node.textContent = widget.currentDisplay == null ? '—' : widget.currentDisplay;
         });
+        if (data.system) applySystemInfo(data.system);
       } catch (_) {
         // Anzeige bleibt auf dem letzten gueltigen Stand.
       }
+    }
+
+    // Alle Info-Kacheln mit frischen System-Werten versorgen (Text + Balken).
+    function applySystemInfo(system) {
+      Object.keys(system).forEach(function (key) {
+        var field = system[key];
+        var vals = document.querySelectorAll('[data-info="' + key + '"]');
+        for (var i = 0; i < vals.length; i++) {
+          vals[i].textContent = field.display == null ? '—' : field.display;
+        }
+        if (field.percent != null) {
+          var bars = document.querySelectorAll('[data-info-bar="' + key + '"]');
+          for (var j = 0; j < bars.length; j++) bars[j].style.width = field.percent + '%';
+        }
+      });
     }
 
     if (initialDialogMode === 'add') {
@@ -390,9 +429,19 @@ ${groups.map(renderGroup).join('\n')}
     }
     if (initialGroupDialogOpen) openGroupDialog('add');
 
+    // MQTT-Events kommen in Bursts (viele Topics gleichzeitig). Ohne Bremse würde
+    // jedes Event ein /dashboard/data-Fetch auslösen und den Server fluten
+    // (listInternalValues ist teuer). Daher pro Burst nur EIN Nachladen (coalesced).
+    var refreshQueued = false;
+    function queueWidgetRefresh() {
+      if (refreshQueued) return;
+      refreshQueued = true;
+      setTimeout(function () { refreshQueued = false; refreshWidgetValues(); }, 1000);
+    }
+
     initDragAndDrop();
     refreshWidgetValues();
-    window.addEventListener('homeess:mqtt', refreshWidgetValues);
+    window.addEventListener('homeess:mqtt', queueWidgetRefresh);
     setInterval(refreshWidgetValues, 60000);`;
 
   return renderLayout({ title: 'Dashboard', activePath: '/dashboard', body, script });
@@ -404,7 +453,7 @@ function groupWidthClass(width) {
   return 'widget-group--full';
 }
 
-function renderGroup(group) {
+function renderGroup(group, ctx = {}) {
   return `          <div class="widget-group ${groupWidthClass(group.width)}" data-group-id="${group.id}">
             <div class="widget-group-head">
               <span class="widget-group-drag" title="Gruppe verschieben" aria-hidden="true">⠿</span>
@@ -415,35 +464,88 @@ function renderGroup(group) {
               </div>
             </div>
             <div class="widget-dropzone widget-grid" data-group="${group.id}">
-${group.widgets.map(renderWidgetCard).join('\n')}
+${group.widgets.map((widget) => renderWidgetCard(widget, ctx)).join('\n')}
             </div>
           </div>`;
 }
 
-function renderWidgetCard(widget) {
-  const label = widget.label || widget.sourceId;
-  const currentDisplay = widget.currentDisplay == null ? '—' : widget.currentDisplay;
-  return `            <div class="widget-card" data-id="${widget.id}">
-              <div class="widget-card-head">
+function widgetCardHead(widget, label) {
+  return `              <div class="widget-card-head">
                 <span class="widget-drag" title="Zum Verschieben ziehen" aria-hidden="true">⠿</span>
                 <div class="widget-actions">
                   <button type="button" class="widget-icon-btn" title="Widget bearbeiten" onclick="openWidgetDialog('edit', ${widget.id})">✎</button>
                   <button type="button" class="widget-icon-btn" title="Widget entfernen" onclick="openDeleteWidgetDialog(${widget.id}, ${toJsStringLiteral(label)})">🗑</button>
                 </div>
-              </div>
+              </div>`;
+}
+
+function renderWidgetCard(widget, ctx = {}) {
+  if (widget.type === 'info') return renderInfoCard(widget, ctx);
+  const label = widget.label || widget.sourceId;
+  const currentDisplay = widget.currentDisplay == null ? '—' : widget.currentDisplay;
+  return `            <div class="widget-card" data-id="${widget.id}">
+${widgetCardHead(widget, label)}
               <div class="widget-label">${escapeHtml(label)}</div>
               <div class="widget-value" id="widget-value-${widget.id}">${escapeHtml(currentDisplay)}</div>
             </div>`;
 }
 
-function renderWidgetDialog({ internalValues, groupsForSelect }) {
+// Info-Kachel: listet die gewählten System-Felder untereinander. „usage"-Felder
+// bekommen einen Fortschrittsbalken. Die Werte werden per data-info-Attribut
+// live aktualisiert (siehe applySystemInfo).
+function renderInfoCard(widget, { infoFields = [], systemInfo = {} } = {}) {
+  const selected = widget.infoFields || infoFields.map((field) => field.key);
+  const selectedSet = new Set(selected);
+  const rows = infoFields
+    .filter((field) => selectedSet.has(field.key))
+    .map((field) => {
+      const info = systemInfo[field.key] || {};
+      const display = info.display == null ? '—' : info.display;
+      if (field.type === 'usage') {
+        const percent = info.percent == null ? 0 : info.percent;
+        return `                <div class="info-row info-row--bar">
+                  <div class="info-row-head">
+                    <span class="info-row-key">${escapeHtml(field.label)}</span>
+                    <span class="info-row-val" data-info="${escapeHtml(field.key)}">${escapeHtml(display)}</span>
+                  </div>
+                  <div class="progress"><div class="progress-bar" data-info-bar="${escapeHtml(field.key)}" style="width:${percent}%"></div></div>
+                </div>`;
+      }
+      return `                <div class="info-row">
+                  <span class="info-row-key">${escapeHtml(field.label)}</span>
+                  <span class="info-row-val" data-info="${escapeHtml(field.key)}">${escapeHtml(display)}</span>
+                </div>`;
+    })
+    .join('\n');
+  return `            <div class="widget-card widget-card--info" data-id="${widget.id}">
+${widgetCardHead(widget, 'System')}
+              <div class="widget-label">System</div>
+              <div class="info-list">
+${rows}
+              </div>
+            </div>`;
+}
+
+function renderWidgetDialog({ internalValues, groupsForSelect, infoFields = [] }) {
+  const infoChecklist = infoFields
+    .map(
+      (field) => `                <label class="info-check">
+                  <input type="checkbox" name="infoFields" value="${escapeHtml(field.key)}" checked>
+                  <span>${escapeHtml(field.label)}</span>
+                </label>`
+    )
+    .join('\n');
   return `        <dialog id="widgetDialog" class="value-dialog">
           <form id="widgetForm" action="/dashboard/widgets" method="POST" class="dialog-form">
             <div class="dialog-hero">
               <div>
                 <h3 id="widgetDialogTitle">Widget hinzufuegen</h3>
-                <p class="muted">Wert auswaehlen und optional einer Gruppe zuordnen.</p>
               </div>
+            </div>
+            <input type="hidden" id="widgetType" name="type" value="value">
+            <div class="dialog-tabs" role="tablist">
+              <button type="button" class="dialog-tab is-active" data-tab="value" onclick="setWidgetType('value')">Wert</button>
+              <button type="button" class="dialog-tab" data-tab="info" onclick="setWidgetType('info')">Info-Kachel</button>
             </div>
             <div class="dialog-grid">
               <label class="field-block" for="widgetGroupId">
@@ -456,7 +558,17 @@ function renderWidgetDialog({ internalValues, groupsForSelect }) {
                 </select>
               </label>
             </div>
-            ${renderValueCatalog({ values: internalValues, inputId: 'widgetSourceId', name: 'sourceId', selectedId: '', label: 'Wert' })}
+            <div class="tab-panel" data-panel="value">
+              ${renderValueCatalog({ values: internalValues, inputId: 'widgetSourceId', name: 'sourceId', selectedId: '', label: 'Wert' })}
+            </div>
+            <div class="tab-panel" data-panel="info" hidden>
+              <div class="field-block">
+                <span>Angezeigte Informationen</span>
+                <div class="info-check-list">
+${infoChecklist}
+                </div>
+              </div>
+            </div>
             <div class="button-row">
               <button type="submit">Speichern</button>
               <button type="button" class="secondary-button" onclick="closeWidgetDialog()">Abbrechen</button>

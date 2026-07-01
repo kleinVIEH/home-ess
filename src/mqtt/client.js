@@ -1,7 +1,8 @@
 'use strict';
 
-const { EventEmitter } = require('events');
 const mqtt = require('mqtt');
+const bus = require('../state-bus');
+const adapterRouter = require('../adapters/router');
 const {
   normalizeMqttTopic,
   ioBrokerIdToMqttTopic,
@@ -10,6 +11,7 @@ const {
   unwrapMqttMessage,
   isMeaningfulValue,
   isCommandTopic,
+  isSchemeTopic,
   parseValue,
 } = require('./topics');
 
@@ -25,7 +27,8 @@ let connected = false;
 let lastError = null;
 
 let subscribedTopics = new Set(); // Deduplizierung der Abos
-const valueCache = new Map(); // cacheKey -> { value, receivedAt }
+// Zentraler Wert-Cache liegt im gemeinsamen state-bus (auch von Adaptern genutzt).
+const valueCache = bus.getCache();
 const topicRoutes = new Map(); // exaktes incomingTopic -> [{ cacheKey, configuredTopic }]
 
 // Ad-hoc-Topics (Modul-Topics außerhalb der State-Definitionen).
@@ -33,9 +36,6 @@ const topicRoutes = new Map(); // exaktes incomingTopic -> [{ cacheKey, configur
 // adhocConfigured: cacheKey -> configuredTopic (für Reconnect-Resubscription)
 const adhocRoutes = new Map(); // incomingCandidate -> Set<cacheKey>
 const adhocConfigured = new Map();
-
-const events = new EventEmitter();
-events.setMaxListeners(0);
 
 // Konfigurierte States/Lasten. Wird später aus der DB gefüllt; aktuell leer.
 let stateDefinitions = [];
@@ -61,10 +61,25 @@ function buildOptions(cfg) {
   };
 }
 
+// Adapter-Topics aus den State-Definitionen, die beim letzten buildTopicRoutes
+// am Router registriert wurden – damit ein Rebuild sie sauber abmelden kann.
+let registeredStateSchemeRoutes = [];
+
 // Routing-Tabelle aus den konfigurierten States neu aufbauen (nur exakte Topics).
+// Schema-Topics (prefix://) werden nicht über den Broker, sondern über den
+// Adapter-Router aufgelöst.
 function buildTopicRoutes() {
   topicRoutes.clear();
+  for (const [topic, cacheKey] of registeredStateSchemeRoutes) {
+    adapterRouter.unregisterRoute(topic, cacheKey);
+  }
+  registeredStateSchemeRoutes = [];
   for (const state of stateDefinitions) {
+    if (isSchemeTopic(state.topic)) {
+      adapterRouter.registerRoute(state.topic, String(state.id));
+      registeredStateSchemeRoutes.push([state.topic, String(state.id)]);
+      continue;
+    }
     for (const candidate of mqttReadCandidates(state.topic)) {
       const routes = topicRoutes.get(candidate) || [];
       routes.push({ cacheKey: String(state.id), configuredTopic: state.topic });
@@ -83,6 +98,7 @@ function subscribeTopic(topic) {
 
 function subscribeAllTopics() {
   for (const state of stateDefinitions) {
+    if (isSchemeTopic(state.topic)) continue; // Adapter-Topics laufen über den Router.
     for (const candidate of mqttSubscribeCandidates(state.topic)) subscribeTopic(candidate);
   }
 }
@@ -91,6 +107,7 @@ function subscribeAllTopics() {
 function requestAllStateValues() {
   if (!client || !connected) return;
   for (const state of stateDefinitions) {
+    if (isSchemeTopic(state.topic)) continue;
     for (const candidate of mqttReadCandidates(state.topic)) {
       client.publish(`${candidate}/get`, '');
     }
@@ -110,17 +127,14 @@ function handleMessage(topic, buffer) {
   const receivedAt = Date.now();
   const changedKeys = [];
   for (const route of topicRoutes.get(incomingTopic) || []) {
-    valueCache.set(route.cacheKey, { value: payload, receivedAt });
     changedKeys.push(route.cacheKey);
   }
   const adhocKeys = adhocRoutes.get(incomingTopic);
   for (const adhocKey of adhocKeys || []) {
-    valueCache.set(adhocKey, { value: payload, receivedAt });
     if (!changedKeys.includes(adhocKey)) changedKeys.push(adhocKey);
   }
-  if (changedKeys.length) {
-    events.emit('values', { topic: incomingTopic, changedKeys, receivedAt });
-  }
+  // Werte setzen und ein gemeinsames Event über den state-bus auslösen.
+  bus.ingest(changedKeys, payload, { topic: incomingTopic, receivedAt });
 }
 
 // Verbindung mit der übergebenen Konfiguration (neu) aufbauen.
@@ -185,9 +199,10 @@ function getCache() {
   return valueCache;
 }
 
+// Façade auf den gemeinsamen state-bus, damit bestehende Konsumenten (Output-
+// Engine, /live, Dashboard) unverändert mqttClient.onValuesChanged verwenden.
 function onValuesChanged(listener) {
-  events.on('values', listener);
-  return () => events.off('values', listener);
+  return bus.onValuesChanged(listener);
 }
 
 // Konfigurierte States setzen und Routing/Abos neu aufbauen.
@@ -216,6 +231,8 @@ function setStateDefinitions(defs) {
 // abzudecken, schreiben wir an alle konkreten Write-Kandidaten. Ein Adapter, der
 // die Variante nicht auf eine State-ID abbilden kann, verwirft sie folgenlos.
 function publish(targetTopic, value) {
+  // Adapter-Topics (prefix://) gehen an die zuständige Instanz, nicht an den Broker.
+  if (isSchemeTopic(targetTopic)) return adapterRouter.write(targetTopic, value);
   if (!client) return false;
   const baseTopic = ioBrokerIdToMqttTopic(normalizeMqttTopic(targetTopic));
   if (!baseTopic) return false;
@@ -298,8 +315,15 @@ function requestAllAdhocValues() {
 // Verwendet mqttReadCandidates für Routing (Punkt/Slash/Adapter-Varianten) und
 // mqttSubscribeCandidates für das eigentliche Abo (inkl. Wildcard bei Slash-States).
 function subscribeAdHoc(configuredTopic, cacheKey) {
+  if (!cacheKey) return;
+  // Adapter-Topics (prefix://) über den Router registrieren statt über den Broker.
+  if (isSchemeTopic(configuredTopic)) {
+    adapterRouter.registerRoute(configuredTopic, cacheKey);
+    adhocConfigured.set(cacheKey, configuredTopic);
+    return;
+  }
   const clean = normalizeMqttTopic(configuredTopic);
-  if (!clean || !cacheKey) return;
+  if (!clean) return;
 
   registerAdhocRoutes(clean, cacheKey);
   adhocConfigured.set(cacheKey, clean);
@@ -315,6 +339,12 @@ function subscribeAdHoc(configuredTopic, cacheKey) {
 function unsubscribeAdHoc(cacheKey) {
   const configuredTopic = adhocConfigured.get(cacheKey);
   if (!configuredTopic) return;
+  if (isSchemeTopic(configuredTopic)) {
+    adapterRouter.unregisterRoute(configuredTopic, cacheKey);
+    adhocConfigured.delete(cacheKey);
+    valueCache.delete(cacheKey);
+    return;
+  }
   for (const candidate of mqttReadCandidates(configuredTopic)) {
     const keys = adhocRoutes.get(candidate);
     if (!keys) continue;
@@ -327,7 +357,9 @@ function unsubscribeAdHoc(cacheKey) {
 
 function requestAdHocValue(cacheKey) {
   const configuredTopic = adhocConfigured.get(cacheKey);
-  if (!configuredTopic || !client || !connected) return false;
+  if (!configuredTopic) return false;
+  if (isSchemeTopic(configuredTopic)) return adapterRouter.requestValue(configuredTopic);
+  if (!client || !connected) return false;
   for (const candidate of mqttReadCandidates(configuredTopic)) {
     client.publish(`${candidate}/get`, '');
   }

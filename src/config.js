@@ -14,6 +14,9 @@ module.exports = {
   // Pfad zur SQLite-DB; per HOME_ESS_DB überschreibbar (z. B. für Tests).
   DB_PATH: process.env.HOME_ESS_DB || path.join(ROOT_DIR, 'data', 'app.db'),
   PUBLIC_DIR: path.join(ROOT_DIR, 'public'),
+  // Verzeichnis mit den Adapter-Unterordnern (jeder Adapter ein Unterordner mit
+  // adapter.json). Per HOME_ESS_ADAPTER_DIR überschreibbar (z. B. für Tests).
+  ADAPTER_DIR: process.env.HOME_ESS_ADAPTER_DIR || path.join(ROOT_DIR, 'adapter'),
 
   // Standard-Zugangsdaten beim ersten Start (wird gehasht abgelegt).
   DEFAULT_PASSWORD: 'admin',

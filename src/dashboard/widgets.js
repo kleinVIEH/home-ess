@@ -1,8 +1,14 @@
 'use strict';
 
-// CRUD für Dashboard-Widgets. Ein Widget zeigt einen internen Wert (gleicher
-// Katalog wie die Outputs) als Kachel. Widgets können einer Gruppe zugeordnet
-// (group_id) und per Drag&Drop angeordnet werden (position).
+// CRUD für Dashboard-Widgets. Ein Widget ist entweder eine **Wert-Kachel**
+// (type 'value', zeigt einen internen Wert aus demselben Katalog wie die Outputs)
+// oder eine **Info-Kachel** (type 'info', zeigt ausgewählte System-Informationen).
+// Widgets können einer Gruppe zugeordnet (group_id) und per Drag&Drop angeordnet
+// werden (position). Typ-spezifische Optionen liegen als JSON in `config`.
+
+const { sanitizeFields } = require('./system-info');
+
+const WIDGET_TYPES = ['value', 'info'];
 
 function dbAll(db, sql, params = []) {
   return new Promise((resolve, reject) => {
@@ -25,19 +31,34 @@ function dbRun(db, sql, params = []) {
   });
 }
 
+function parseConfig(raw) {
+  if (raw == null || raw === '') return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
 function normalizeWidgetRow(row = {}) {
-  return {
+  const type = WIDGET_TYPES.includes(row.type) ? row.type : 'value';
+  const config = parseConfig(row.config);
+  const widget = {
     id: row.id,
+    type,
     sourceId: row.source_id || '',
     groupId: row.group_id == null ? null : row.group_id,
     position: row.position == null ? 0 : row.position,
   };
+  if (type === 'info') widget.infoFields = sanitizeFields(config.fields);
+  return widget;
 }
 
 async function listWidgets(db) {
   const rows = await dbAll(
     db,
-    'SELECT id, source_id, group_id, position FROM dashboard_widgets ORDER BY position ASC, id ASC'
+    'SELECT id, source_id, type, config, group_id, position FROM dashboard_widgets ORDER BY position ASC, id ASC'
   );
   return rows.map(normalizeWidgetRow);
 }
@@ -45,7 +66,7 @@ async function listWidgets(db) {
 async function getWidget(db, id) {
   const row = await dbGet(
     db,
-    'SELECT id, source_id, group_id, position FROM dashboard_widgets WHERE id = ?',
+    'SELECT id, source_id, type, config, group_id, position FROM dashboard_widgets WHERE id = ?',
     [id]
   );
   return row ? normalizeWidgetRow(row) : null;
@@ -57,17 +78,34 @@ function parseGroupId(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+// Formularseitig kommen Checkbox-Felder als String oder Array (mehrfach gleicher
+// name) an – beides auf ein Array normalisieren.
+function toArray(value) {
+  if (value == null) return [];
+  return Array.isArray(value) ? value : [value];
+}
+
 function normalizeWidgetInput(input = {}) {
-  return {
+  const type = WIDGET_TYPES.includes(input.type) ? input.type : 'value';
+  const normalized = {
+    type,
     sourceId: String(input.sourceId || '').trim(),
     groupId: parseGroupId(input.groupId),
   };
+  if (type === 'info') normalized.infoFields = sanitizeFields(toArray(input.infoFields).map(String));
+  return normalized;
 }
 
 function validateWidgetInput(input) {
   const errors = [];
-  if (!input.sourceId) errors.push('Bitte einen Wert auswählen.');
+  if (input.type === 'value' && !input.sourceId) errors.push('Bitte einen Wert auswählen.');
   return errors;
+}
+
+// JSON-Konfiguration je Typ (oder null, wenn keine nötig).
+function configFor(widget) {
+  if (widget.type === 'info') return JSON.stringify({ fields: widget.infoFields });
+  return null;
 }
 
 async function nextPosition(db) {
@@ -87,8 +125,8 @@ async function createWidget(db, input) {
   const position = await nextPosition(db);
   const result = await dbRun(
     db,
-    'INSERT INTO dashboard_widgets (source_id, group_id, position) VALUES (?, ?, ?)',
-    [widget.sourceId, widget.groupId, position]
+    'INSERT INTO dashboard_widgets (source_id, type, config, group_id, position) VALUES (?, ?, ?, ?, ?)',
+    [widget.sourceId, widget.type, configFor(widget), widget.groupId, position]
   );
   return getWidget(db, result.lastID);
 }
@@ -104,8 +142,8 @@ async function updateWidget(db, id, input) {
 
   await dbRun(
     db,
-    'UPDATE dashboard_widgets SET source_id = ?, group_id = ? WHERE id = ?',
-    [widget.sourceId, widget.groupId, id]
+    'UPDATE dashboard_widgets SET source_id = ?, type = ?, config = ?, group_id = ? WHERE id = ?',
+    [widget.sourceId, widget.type, configFor(widget), widget.groupId, id]
   );
   return getWidget(db, id);
 }
@@ -131,6 +169,7 @@ async function reorderWidgets(db, items) {
 }
 
 module.exports = {
+  WIDGET_TYPES,
   listWidgets,
   getWidget,
   createWidget,

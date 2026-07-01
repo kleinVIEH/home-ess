@@ -1,0 +1,321 @@
+'use strict';
+
+const os = require('os');
+const fs = require('fs');
+const path = require('path');
+
+// Temp-Adapterverzeichnis und Temp-DB VOR dem Laden von config/db setzen.
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'homeess-adapters-'));
+const ADAPTER_DIR = path.join(TMP, 'adapter');
+fs.mkdirSync(ADAPTER_DIR, { recursive: true });
+process.env.HOME_ESS_ADAPTER_DIR = ADAPTER_DIR;
+process.env.HOME_ESS_DB = path.join(TMP, 'app.db');
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { EventEmitter } = require('events');
+
+const registry = require('../src/adapters/registry');
+const instancesRepo = require('../src/adapters/instances');
+const router = require('../src/adapters/router');
+const host = require('../src/adapters/host');
+const bus = require('../src/state-bus');
+const stateEditor = require('../src/adapters/state-editor');
+const presetsRepo = require('../src/adapters/presets');
+const { buildStatesTree } = require('../src/adapters/states');
+const { openDatabase } = require('../src/db');
+
+const EDITOR = {
+  storageKey: 'registers', keyField: 'address', nameField: 'name', label: 'Register', presets: true,
+  columns: [
+    { key: 'address', label: 'Adresse', type: 'text', required: true, default: '', options: [] },
+    { key: 'name', label: 'Name', type: 'text', required: true, default: '', options: [] },
+    { key: 'register', label: 'Register', type: 'number', required: true, default: '', options: [] },
+    { key: 'registerType', label: 'Typ', type: 'select', default: 'holding', options: [{ value: 'holding', label: 'H' }, { value: 'coil', label: 'C' }] },
+    { key: 'writable', label: 'Schreibbar', type: 'checkbox', default: false, options: [] },
+    { key: 'scale', label: 'Scale', type: 'number', default: 1, options: [] },
+  ],
+};
+
+// Beispiel-Adapter im Temp-Verzeichnis anlegen.
+function writeAdapter(id, prefix, extra = {}) {
+  const dir = path.join(ADAPTER_DIR, id);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, 'adapter.json'),
+    JSON.stringify({ id, name: `${id} Adapter`, prefix, main: 'index.js', settings: extra.settings || [] })
+  );
+  fs.writeFileSync(path.join(dir, 'index.js'), 'module.exports = () => ({ start() {} });');
+}
+
+function freshDb() {
+  const dbPath = process.env.HOME_ESS_DB;
+  fs.rmSync(dbPath, { force: true });
+  const db = openDatabase();
+  return new Promise((resolve) => setTimeout(() => resolve(db), 300));
+}
+
+test('Registry scannt /adapter und validiert Prefix/Manifest', () => {
+  writeAdapter('demo', 'demo', { settings: [{ key: 'interval', type: 'number', default: 5 }] });
+  writeAdapter('bad', 'Inv@lid'); // ungültiger Prefix -> verworfen
+  const list = registry.loadRegistry();
+  const ids = list.map((m) => m.id);
+  assert.ok(ids.includes('demo'), 'demo gefunden');
+  assert.ok(!ids.includes('bad'), 'ungültiger Prefix verworfen');
+  const demo = registry.getManifest('demo');
+  assert.equal(demo.prefix, 'demo');
+  assert.equal(demo.settings.length, 1);
+  assert.equal(demo.settings[0].type, 'number');
+});
+
+test('Instanzen-CRUD', async () => {
+  const db = await freshDb();
+  const id = await instancesRepo.createInstance(db, 'demo', 'sim1');
+  let list = await instancesRepo.listInstances(db);
+  assert.equal(list.length, 1);
+  assert.equal(list[0].name, 'sim1');
+  assert.equal(list[0].enabled, false);
+
+  await instancesRepo.renameInstance(db, id, 'sim-renamed');
+  await instancesRepo.setEnabled(db, id, true);
+  await instancesRepo.updateSettings(db, id, { interval: 7 });
+  const inst = await instancesRepo.getInstance(db, id);
+  assert.equal(inst.name, 'sim-renamed');
+  assert.equal(inst.enabled, true);
+  assert.deepEqual(inst.settings, { interval: 7 });
+
+  await instancesRepo.deleteInstance(db, id);
+  list = await instancesRepo.listInstances(db);
+  assert.equal(list.length, 0);
+  db.close();
+});
+
+test('Router routet Instanz-Werte in den Bus (kanonisch + registrierter Key)', () => {
+  router.registerScheme('demo', 'demo');
+  router.setInstanceScheme('sim1', 'demo');
+  router.registerRoute('demo://sim1/messwerte/temperatur', 'mystate');
+  router.ingestFromInstance('sim1', 'messwerte/temperatur', 21.5);
+
+  const cache = bus.getCache();
+  assert.equal(cache.get('demo://sim1/messwerte/temperatur').value, 21.5);
+  assert.equal(cache.get('mystate').value, 21.5);
+
+  router.unregisterRoute('demo://sim1/messwerte/temperatur', 'mystate');
+  router.removeInstanceScheme('sim1');
+});
+
+test('Bus feuert nur bei echter Wertänderung (bricht Rückkopplung)', () => {
+  let events = 0;
+  const off = bus.onValuesChanged(() => { events += 1; });
+
+  bus.ingest(['loop_key'], 7);       // neu -> Änderung -> Event
+  bus.ingest(['loop_key'], 7);       // gleich -> kein Event
+  bus.ingest(['loop_key'], '7');     // gleiche Repräsentation -> kein Event
+  assert.equal(events, 1, 'nur die erste (echte) Änderung feuert');
+
+  bus.ingest(['loop_key'], 8);       // geänderter Wert -> Event
+  assert.equal(events, 2);
+
+  // Cache bleibt trotz unterdrückter Events frisch (Frische für Verifikation).
+  const before = bus.getCache().get('loop_key').receivedAt;
+  bus.ingest(['loop_key'], 8, { receivedAt: before + 1000 });
+  assert.equal(bus.getCache().get('loop_key').receivedAt, before + 1000);
+  assert.equal(events, 2, 'unveränderter Wert löst kein weiteres Event aus');
+
+  off();
+  bus.remove('loop_key');
+});
+
+test('Router liefert retained-Wert sofort beim Abonnieren (kein Warten auf Tick)', () => {
+  router.registerScheme('demo', 'demo');
+  router.setInstanceScheme('sim2', 'demo');
+  // Adapter meldet zuerst – noch ohne registrierten Konsumenten. Wert liegt nur
+  // unter dem kanonischen Topic.
+  router.ingestFromInstance('sim2', 'messwerte/leistung', 1234);
+  const cache = bus.getCache();
+  assert.equal(cache.get('demo://sim2/messwerte/leistung').value, 1234);
+  assert.equal(cache.get('spaeter'), undefined);
+
+  // Jetzt abonniert ein Konsument (z. B. per State-Picker gewähltes Topic) → er
+  // muss den zuletzt bekannten Wert sofort erhalten, ohne auf den nächsten Tick
+  // oder eine read()-Implementierung zu warten.
+  router.registerRoute('demo://sim2/messwerte/leistung', 'spaeter');
+  assert.equal(cache.get('spaeter').value, 1234);
+
+  router.unregisterRoute('demo://sim2/messwerte/leistung', 'spaeter');
+  router.removeInstanceScheme('sim2');
+});
+
+test('Router.write delegiert an den Host', () => {
+  const calls = [];
+  router.setHost({ write: (name, addr, val) => calls.push([name, addr, val]), read: () => {} });
+  const handled = router.write('demo://sim1/steuerung/schalter', true);
+  assert.equal(handled, true);
+  assert.deepEqual(calls, [['sim1', 'steuerung/schalter', true]]);
+  assert.equal(router.write('battery.0.soc', 1), false); // kein Adapter-Topic
+});
+
+test('Host startet Instanz als (Fake-)Kindprozess und verarbeitet IPC', async () => {
+  const db = await freshDb();
+  registry.loadRegistry();
+  const id = await instancesRepo.createInstance(db, 'demo', 'simhost');
+  await instancesRepo.setEnabled(db, id, true);
+
+  const children = [];
+  host._setForkImpl(() => {
+    const child = new EventEmitter();
+    child.sent = [];
+    child.send = (msg) => child.sent.push(msg);
+    child.kill = () => child.emit('exit', 0);
+    children.push(child);
+    return child;
+  });
+
+  await host.initAdapters(db);
+  assert.equal(children.length, 1, 'ein Kindprozess geforkt');
+  const child = children[0];
+  const initMsg = child.sent.find((m) => m.type === 'init');
+  assert.ok(initMsg, 'init gesendet');
+  assert.equal(initMsg.name, 'simhost');
+
+  // Kind meldet States -> persistiert in adapter_states.
+  child.emit('message', { type: 'states', list: [
+    { address: 'messwerte/temperatur', name: 'Temperatur', category: 'Messwerte', unit: '°C' },
+  ] });
+  // Kind meldet Wert -> landet im Bus unter kanonischem Topic.
+  child.emit('message', { type: 'value', address: 'messwerte/temperatur', value: 19 });
+  await new Promise((r) => setTimeout(r, 150));
+
+  assert.equal(bus.getCache().get('demo://simhost/messwerte/temperatur').value, 19);
+  assert.equal(host.isRunning(id), true);
+
+  // States-Baum spiegelt persistierte States + Live-Wert.
+  const tree = await buildStatesTree(db);
+  const inst = tree.find((t) => t.instanceName === 'simhost');
+  assert.ok(inst);
+  assert.equal(inst.categories[0].name, 'Messwerte');
+  assert.equal(inst.categories[0].states[0].value, 19);
+
+  await host.stopInstance(id);
+  assert.equal(host.isRunning(id), false);
+  const stopMsg = child.sent.find((m) => m.type === 'stop');
+  assert.ok(stopMsg, 'stop gesendet');
+  db.close();
+});
+
+test('Host startet abgestürztes Kind automatisch neu', async () => {
+  const db = await freshDb();
+  registry.loadRegistry();
+  const id = await instancesRepo.createInstance(db, 'demo', 'simcrash');
+  await instancesRepo.setEnabled(db, id, true);
+
+  const children = [];
+  host._setForkImpl(() => {
+    const child = new EventEmitter();
+    child.sent = [];
+    child.send = (msg) => child.sent.push(msg);
+    child.kill = () => child.emit('exit', 1);
+    children.push(child);
+    return child;
+  });
+
+  await host.initAdapters(db);
+  assert.equal(children.length, 1);
+  // Absturz simulieren (kein vorheriges stop) -> Backoff-Restart.
+  children[0].emit('exit', 1);
+  await new Promise((r) => setTimeout(r, 1200));
+  assert.ok(children.length >= 2, 'Kind wurde neu gestartet');
+
+  await host.stopInstance(id);
+  db.close();
+});
+
+test('State-Editor normalisiert Zeilen typgerecht', () => {
+  const row = stateEditor.normalizeRow(
+    { address: 'batterie/soc', name: 'SoC', register: '843', registerType: 'unsinn', writable: '1', scale: '0,01' },
+    EDITOR
+  );
+  assert.equal(row.register, 843);            // number-Coercion
+  assert.equal(row.writable, true);           // checkbox
+  assert.equal(row.registerType, 'holding');  // ungültige Option -> default
+  assert.equal(row.scale, 0.01);              // Komma -> Punkt
+});
+
+test('State-Editor validiert Pflichtfelder', () => {
+  assert.deepEqual(stateEditor.validateRow(stateEditor.normalizeRow({ address: 'a', name: 'n', register: 1 }, EDITOR), EDITOR), []);
+  const errs = stateEditor.validateRow(stateEditor.normalizeRow({ name: 'n' }, EDITOR), EDITOR);
+  assert.ok(errs.length >= 1, 'fehlende Pflichtfelder gemeldet');
+});
+
+test('Preset-Validierung: gültig, Duplikate übersprungen, Format geprüft', () => {
+  const good = presetsRepo.validatePresetData({
+    presetFormat: 1,
+    registers: [
+      { address: 'a', name: 'A', register: 1 },
+      { address: 'a', name: 'A2', register: 2 }, // Duplikat -> skip
+      { name: 'kein-key', register: 3 },         // ohne address -> skip
+      { address: 'b', name: 'B', register: 4 },
+    ],
+  }, EDITOR);
+  assert.equal(good.ok, true);
+  assert.deepEqual(good.rows.map((r) => r.key), ['a', 'b']);
+  assert.equal(good.skipped, 2);
+
+  assert.equal(presetsRepo.validatePresetData({ registers: [] }, EDITOR).ok, false);
+  assert.equal(presetsRepo.validatePresetData({ presetFormat: 99, registers: [{ address: 'a', name: 'A', register: 1 }] }, EDITOR).ok, false);
+  assert.equal(presetsRepo.validatePresetData('nope', EDITOR).ok, false);
+});
+
+test('State-Editor: zusammengesetzter Schlüssel (unitId + address)', () => {
+  const ed = {
+    storageKey: 'registers', keyField: 'unitId', keyFields: ['unitId', 'address'], nameField: 'name', presets: true,
+    columns: [
+      { key: 'unitId', label: 'Unit', type: 'number', default: 1, options: [] },
+      { key: 'address', label: 'Adresse', type: 'text', required: true, default: '', options: [] },
+      { key: 'name', label: 'Name', type: 'text', required: true, default: '', options: [] },
+    ],
+  };
+  const r1 = stateEditor.normalizeRow({ unitId: 1, address: 'batterie/soc', name: 'A' }, ed);
+  const r2 = stateEditor.normalizeRow({ unitId: 2, address: 'batterie/soc', name: 'B' }, ed);
+  assert.equal(stateEditor.rowKey(r1, ed), '1/batterie/soc');
+  assert.equal(stateEditor.rowKey(r2, ed), '2/batterie/soc'); // gleiche address, andere Unit -> eindeutig
+
+  const v = presetsRepo.validatePresetData({
+    presetFormat: 1,
+    registers: [
+      { unitId: 1, address: 'a', name: 'A' },
+      { unitId: 2, address: 'a', name: 'A2' }, // andere Unit -> erlaubt
+      { unitId: 1, address: 'a', name: 'dup' }, // (1,a) doppelt -> skip
+    ],
+  }, ed);
+  assert.equal(v.ok, true);
+  assert.deepEqual(v.rows.map((r) => r.key), ['1/a', '2/a']);
+  assert.equal(v.skipped, 1);
+});
+
+test('Registry liest stateEditor-Schema (über Temp-Adapter)', () => {
+  const dir = path.join(ADAPTER_DIR, 'withedit');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'adapter.json'), JSON.stringify({
+    id: 'withedit', prefix: 'we', main: 'index.js',
+    stateEditor: { storageKey: 'registers', keyField: 'address', presets: true, columns: [
+      { key: 'address', label: 'Adresse', type: 'text', required: true },
+      { key: 'register', label: 'Register', type: 'number' },
+    ] },
+  }));
+  fs.writeFileSync(path.join(dir, 'index.js'), 'module.exports = () => ({ start() {} });');
+  registry.loadRegistry();
+  const m = registry.getManifest('withedit');
+  assert.ok(m.stateEditor);
+  assert.equal(m.stateEditor.keyField, 'address');
+  assert.equal(m.stateEditor.columns.length, 2);
+  assert.equal(m.stateEditor.presets, true);
+});
+
+test.after(() => {
+  try {
+    fs.rmSync(TMP, { recursive: true, force: true });
+  } catch (_) {
+    /* egal */
+  }
+});

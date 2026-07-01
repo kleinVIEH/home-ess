@@ -17,11 +17,15 @@ ist ein Web-Dashboard mit vorgeschaltetem Login.
 
 **Aktueller Funktionsstand:**
 - Login (Passwort) mit **„Passwort merken"**-Checkbox.
-- **Dashboard** mit frei konfigurierbaren **Widgets** (jeder berechnete Wert als
-  Live-Kachel) und **Gruppen** (Titel + Breite voll/halb/viertel). Widgets und
-  Gruppen per **Drag & Drop** anordbar, Widgets in Gruppen verschiebbar,
-  Widgets/Gruppen bearbeit- und löschbar. Quelle der Werte: derselbe
-  Wert-Katalog wie die Output-Seite (`output/internal-values.js`).
+- **Dashboard** mit frei konfigurierbaren **Widgets** und **Gruppen** (Titel +
+  Breite voll/halb/viertel). Zwei Widget-Typen (Add-Dialog mit Tabs, Spalte
+  `dashboard_widgets.type`): **`value`** (Live-Kachel eines Werts aus dem
+  Wert-Katalog `output/internal-values.js`) und **`info`** (System-Infos aus
+  `dashboard/system-info.js` — Versionen, CPU/RAM als Fortschrittsbalken u. a.;
+  gewählte Felder als JSON in `dashboard_widgets.config`, Default = alle). Widgets
+  und Gruppen per **Drag & Drop** anordbar, Widgets in Gruppen verschiebbar,
+  Widgets/Gruppen bearbeit- und löschbar. Live-Refresh über `GET /dashboard/data`
+  (Werte + `system`-Block).
 - **Stromverbrauch**: MQTT-Topic-Felder für Eigenverbrauch L1–L3, Netzbezug
   L1–L3 und Zählerstände; oben Eigenverbrauch/Netzbezug als Phasensummen,
   Woche/Jahr aus Tageswert plus Tagesstart-Abgleich; Jahreswechsel → Vorjahr.
@@ -378,7 +382,8 @@ src/
     engine.js             Publish-Engine (diff, debounced)
   dashboard/
     groups.js             Gruppen-CRUD
-    widgets.js            Widget-CRUD
+    widgets.js            Widget-CRUD (Typen value/info, config-JSON)
+    system-info.js        Info-Kachel: Feld-Katalog + Live-System-Werte
   routes/
     dashboard.js          GET /dashboard + Widget/Gruppen-CRUD + /layout + /data
     stromverbrauch.js     GET /stromverbrauch + Topic/Abgleich-POSTs + /data
@@ -496,6 +501,75 @@ werden beim Subscribe und beim Reconnect gesendet. Cache-Keys: `pool:<topic>`.
 Abgerufen über `readPoolValue(cache, topic)`. Die Output-Regelschleife verwendet
 pro Ziel-State einen gemeinsamen `output.readback:<topic>`-Cache-Key und fordert
 den Istwert zusätzlich alle 30 Sekunden aktiv an.
+
+## Adapter-Schnittstelle (Geräte-Anbindung)
+
+Austauschbare Adapter verbinden homeESS mit Geräten, **ohne** Eingriff in den
+Quellcode. Vollständiges Regelwerk in [ADAPTER.md](ADAPTER.md); Vorlage:
+`/adapter/demo`.
+
+- **Verzeichnis** `config.ADAPTER_DIR` (Default `<repo>/adapter`, override
+  `HOME_ESS_ADAPTER_DIR`). Je Adapter ein Unterordner mit `adapter.json`
+  (Manifest: `id`, `prefix`, `settings`-Schema, `main`) + Einstiegsdatei.
+  `src/adapters/registry.js` scannt und validiert.
+- **Gemeinsamer Wert-Bus** `src/state-bus.js`: hält den zentralen `valueCache` +
+  EventEmitter. Sowohl `mqtt/client.js` (Broker) als auch Adapter schreiben hier
+  hinein; `mqttClient.getCache()/onValuesChanged()` sind Fassaden darauf — alle
+  bestehenden Konsumenten (Output-Engine, `/live`, Dashboard) bleiben unverändert.
+  `ingest` aktualisiert den Cache (inkl. `receivedAt`) immer, **emittiert das
+  `values`-Event aber nur bei tatsächlicher Wertänderung** — das verhindert
+  write→Echo-Rückkopplungen auf Adapter-Topics und hält die Event-Last niedrig.
+  Reaktive Konsumenten (Output-Engine, Prognose-Verhalten) entprellen mit 1000 ms;
+  browser-seitig fassen Dashboard/States das Nachladen pro Event-Burst zusammen.
+- **Router** `src/adapters/router.js` + Schema-Helfer `parseSchemeTopic`/
+  `buildSchemeTopic` in `mqtt/topics.js`. Topics `prefix://instanz/adresse` werden
+  vom Client an den Router delegiert (in `publish`, `subscribeAdHoc`,
+  `requestAdHocValue`, `buildTopicRoutes`); Topics ohne Schema laufen unverändert
+  über den Broker (abwärtskompatibel). Der Router wirkt wie ein **kleiner interner
+  Broker**: `registerRoute` liefert dem neuen Abonnenten sofort den zuletzt
+  bekannten Wert (retained delivery aus dem Bus, unabhängig von `read()`),
+  `ingestFromInstance` verteilt jede Wertänderung automatisch an alle Abonnenten.
+  **Wichtig:** `normalizeMqttTopic` ist schema-fest — es darf das `://` von
+  Schema-Topics nicht kollabieren (sonst würden sie als Broker-Topic fehlgeroutet
+  und lieferten keinen Wert). Config-Speicherpfade normalisieren gefahrlos.
+- **Instanzen** (`adapter_instances`, CRUD in `src/adapters/instances.js`): pro
+  Adapter mehrere benannte Instanzen mit eigenen JSON-Settings; Name = Autorität
+  im Topic.
+- **Isolation**: `src/adapters/host.js` (Supervisor) forkt je aktiver Instanz
+  `src/adapters/runtime.js` als Kindprozess (Auto-Restart mit Backoff). Der
+  Runtime-Shim lädt die Adapter-`main` und bildet die `host`-API transparent auf
+  IPC ab — Adapter-Autoren kennen kein IPC. `forkImpl` ist für Tests injizierbar
+  (`host._setForkImpl`). Init in `app.js` vor `loadAllStateDefinitions`.
+- **State-Editor (generisch, schema-getrieben)**: Adapter können im Manifest einen
+  `stateEditor` deklarieren (Spalten + `presets`-Flag, parse in `registry.js`).
+  homeESS rendert daraus die Verwaltungs-Unterseite `/adapter/instance/:id/states`
+  (`src/views/adapter-states.js`, Routen in `src/routes/adapters.js`); Zeilen-
+  Normalisierung/Validierung in `src/adapters/state-editor.js`. Die Zeilen liegen
+  in `instance.settings[storageKey]` und sind die **Live-States**. **Presets**
+  (`src/adapters/presets.js`, Verzeichnis `<adapter>/presets/*.json`) sind reine
+  Vorlagen: Laden mit Auswahl, „als Preset speichern", Upload (Browser liest die
+  Datei und POSTet JSON). Kein adapterspezifischer Code im Core.
+- **Modbus-Adapter** (`adapter/modbus`): nutzt den State-Editor (Spalte =
+  Register) + Presets (Format in `adapter/modbus/PRESET.md`). Eigener,
+  abhängigkeitsfreier Modbus-TCP-Client (`modbus-tcp.js`, Unit-ID **pro Request**)
+  + reine Dekodierung/Kodierung (`decode.js`, byte-/word-order/scale gemäß
+  PRESET.md). Die **Unit-ID ist Teil jedes Registers** (zusammengesetzter
+  Editor-Schlüssel `keyFields:[unitId,address]`) und bildet die erste Adressebene
+  `modbus://instanz/<unitId>/<adresse>` — eine Instanz bedient so mehrere Units.
+- **States-Seite** (`/states`, Menü unter Prognose): `src/adapters/states.js`
+  aggregiert gemeldete States (persistiert in `adapter_states`) + Live-Werte aus
+  dem Bus zum Baum. **Adapter-Seite** (`/adapter`, Fußbereich über Module):
+  Verwaltung + generische Settings aus dem Manifest-Schema.
+- **State-Picker** `src/views/state-picker.js` (analog `value-catalog.js`): Button
+  hinter Topic-Feldern öffnet den State-Baum (`/states/catalog.json`) und
+  übernimmt `prefix://instanz/adresse`. Als **Popover** (Popover-API,
+  `showPopover()`) umgesetzt, das wie ein Dropdown am Feld andockt (je nach Platz
+  nach unten/oben) und im **Top-Layer** über `<dialog>`-Elementen liegt.
+  **Global** über `renderLayout` eingehängt:
+  `statePickerAutoAttach()` dekoriert per DOMContentLoaded **jedes** Eingabefeld,
+  dessen `name` „topic" enthält, und beobachtet via MutationObserver nachträglich
+  eingefügte Felder (dynamische Anlagen-/Wallbox-Zeilen). Einzelne Seiten müssen
+  nichts tun; ein Feld kann sich per `data-no-state-picker` ausnehmen.
 
 ## Betriebslevel / Lastmanagement
 

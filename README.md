@@ -11,11 +11,13 @@ Bedienung über ein Web-Dashboard mit vorgeschaltetem Login.
 ## Features (aktuell)
 
 - 🔐 **Login** mit Passwort und „Passwort merken" (persistentes Cookie).
-- 🖥️ **Dashboard** — frei konfigurierbare **Widgets** (jeder berechnete Wert als
-  Live-Kachel), **Gruppen** mit Titel und Breite (voll/halb/viertel),
-  Anordnung per **Drag & Drop** (Widgets und Gruppen); Widgets per Drag in
-  Gruppen verschiebbar, Widgets/Gruppen bearbeit- und löschbar. Die Wertauswahl
-  erfolgt über den zentralen **Wertekatalog** (siehe Output).
+- 🖥️ **Dashboard** — frei konfigurierbare **Widgets** in zwei Sorten (Dialog mit
+  Tabs): **Wert-Kachel** (jeder berechnete Wert als Live-Kachel, Auswahl über den
+  zentralen **Wertekatalog**) und **Info-Kachel** (System-Infos wie homeESS-/Node-
+  Version, Plattform, CPU-/RAM-Auslastung als Fortschrittsbalken u. a. — Felder per
+  Häkchen wählbar). **Gruppen** mit Titel und Breite (voll/halb/viertel), Anordnung
+  per **Drag & Drop** (Widgets und Gruppen); Widgets per Drag in Gruppen
+  verschiebbar, Widgets/Gruppen bearbeit- und löschbar.
 - ⚡ **Stromverbrauch** — KPI-Kacheln: Eigenverbrauch, Netzbezug, Heute,
   Woche, Jahr (inkl. Vorjahr), konfigurierbare MQTT-Topics je Phase sowie
   Tagesstart-Abgleich für Woche/Jahr.
@@ -163,6 +165,17 @@ Bedienung über ein Web-Dashboard mit vorgeschaltetem Login.
   dichte, kategorisierte Liste.
 - 🧩 **Module** — Verwaltungsseite zum Aktivieren/Deaktivieren optionaler Module;
   aktive Module erscheinen automatisch in der Sidebar.
+- 🔌 **Adapter** — austauschbare Geräte-Anbindungen (z. B. Modbus) als eigene
+  Verzeichnisse unter `/adapter/`, **ohne Eingriff in den Quellcode**. Pro Adapter
+  mehrere benannte Instanzen anlegen/aktivieren; jede läuft isoliert als eigener
+  Kindprozess. Werte werden über `prefix://instanz/adresse` geroutet (Topics ohne
+  Schema laufen weiter über den MQTT-Broker). Regelwerk: [ADAPTER.md](ADAPTER.md),
+  Vorlage: `adapter/demo`. Mitgeliefert: **Modbus-TCP-Adapter** (`adapter/modbus`)
+  mit Register-Verwaltung und **Presets** (Vorlagen zum Anlegen der Live-States,
+  inkl. Upload; Format: `adapter/modbus/PRESET.md`).
+- 🗂️ **States** — Baumansicht aller von Adaptern gemeldeten Werte (Instanz →
+  Kategorie → State) mit Live-Werten; hinter Topic-Feldern direkt per Auswahl­
+  dialog übernehmbar.
 - 🌤️ **Sonnenintensität** (% des Clear-Sky-Ideals, auf 100 % gedeckelt):
   aktuell sowie 10-Minuten-/Tages-/Vortagsmittel. Nur Anlagen oberhalb ihres
   größenrelativen Sonnenreferenz-Cutoffs fließen ein.
@@ -176,16 +189,59 @@ Bedienung über ein Web-Dashboard mit vorgeschaltetem Login.
 Alle Seiten werden **dynamisch** serverseitig gerendert — es gibt keine
 statischen HTML-Seiten.
 
+## Hardware-Empfehlungen
+
+homeESS ist schlank (Node.js + SQLite + MQTT-Client); jede aktive Adapter-Instanz
+läuft als eigener Prozess. Es genügt bescheidene Hardware für den Dauerbetrieb:
+
+| Ressource | Minimum | Empfohlen |
+| --------- | ------- | --------- |
+| CPU       | 1 Kern (x86/ARM) | **2 Kerne** — Hauptprozess ist single-threaded, Adapter laufen als eigene Prozesse |
+| RAM       | 512 MB  | **1 GB** |
+| Speicher  | 4 GB    | **8 GB SSD/eMMC** — die SQLite-DB bleibt klein; SD-Karten leiden an Dauerschreibzyklen |
+| Netzwerk  | WLAN    | **kabelgebundenes Ethernet** für eine stabile MQTT-Verbindung |
+
+Bewährte Plattformen: **Raspberry Pi 4/5** (ab 2 GB), ein **Mini-PC** (z. B.
+Intel N100/NUC) oder eine **kleine VM / LXC-Container** (z. B. unter Proxmox
+genügen 2 vCPU + 1 GB RAM). Voraussetzung ist ein Debian-basiertes System mit
+`systemd` und `apt` (siehe Installation).
+
 ## Voraussetzungen
 
-- Node.js ≥ 20.17
+- Debian/Ubuntu/Raspberry Pi OS mit `systemd` und `apt` (für die Installation).
+- Node.js ≥ 20.17 (wird vom Setup-Skript bei Bedarf automatisch installiert).
 - Ein erreichbarer MQTT-Broker (z. B. ioBroker) — optional zum Start.
 
 ## Installation & Start
 
+### Schnellstart auf frischem Debian
+
+Von der leeren Maschine bis zur laufenden Instanz:
+
+1. **Debian installieren** — eine minimale Server-Variante (ohne Desktop) reicht.
+   Danach als `root` anmelden oder mit `su -` zu root wechseln.
+2. **curl und sudo bereitstellen** (auf einer Minimalinstallation oft nicht dabei):
+
+   ```bash
+   apt update
+   apt install -y curl sudo
+   ```
+
+3. **homeESS installieren** (ein Befehl):
+
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/kleinVIEH/home-ess/main/install.sh | sudo bash
+   ```
+
+   > Als `root` kannst du `sudo` weglassen; mit einem normalen Benutzer muss dieser
+   > in der `sudo`-Gruppe sein (`usermod -aG sudo <benutzer>`, danach neu anmelden).
+
+Danach ist die Weboberfläche unter `http://<host-ip>:3000` erreichbar
+(Standard-Login: **`admin`**).
+
 ### Automatische Installation (Debian/Ubuntu/Raspberry Pi OS)
 
-homeESS lässt sich auf einem frischen System mit einem Befehl installieren:
+Auf einem bereits vorbereiteten System genügt der reine Installationsbefehl:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/kleinVIEH/home-ess/main/install.sh | sudo bash
@@ -240,9 +296,12 @@ src/
   db.js            SQLite (Schema, Seed, Migration)
   app.js           Express-App + periodische Jobs
   modules/         Modul-Registry (optionale Features)
+  state-bus.js     Gemeinsamer Wert-Cache + Event-Bus (Broker und Adapter)
+  adapters/        Adapter-Schnittstelle: Registry, Instanzen-CRUD, Prefix-Router,
+                   Host/Supervisor (fork je Instanz), Runtime-Shim, States-Aggregat
   auth/            Passwort-Hashing, Sessions, Login-Routen
-  mqtt/            Topic-Helfer, Config, Verbindungs-Manager (inkl. publish,
-                   Ad-hoc-Subscriptions), State-Definitionen
+  mqtt/            Topic-Helfer (inkl. prefix://-Schema), Config, Verbindungs-Manager
+                   (inkl. publish, Ad-hoc-Subscriptions, Adapter-Routing), State-Defs
   stromverbrauch/  Topic-Konfiguration + Aggregation
   photovoltaik/    PV-Anlagen, Clear-Sky-Modell, Konvertertypen, Sonnenintensität,
                    Prognose (forecast.js), Selbstkalibrierung (calibration.js)
@@ -261,8 +320,11 @@ src/
   routes/          Eine Datei je Seite/Feature
   views/           Dynamische HTML-Renderer (je Seite eine Datei),
                    value-catalog.js = zentrale Wertekatalog-Routine
-                   (Output- und Dashboard-Dialoge)
+                   (Output- und Dashboard-Dialoge),
+                   state-picker.js = Auswahldialog für Adapter-States
 public/styles.css  Statisches Asset (CSS)
+adapter/           Adapter-Verzeichnis (je Adapter ein Unterordner mit
+                   adapter.json + index.js); enthält den Demo-Referenzadapter
 ```
 
 ## Daten

@@ -903,6 +903,10 @@ h2 .cmd-confirm { font-size: 13px; vertical-align: middle; }
     margin: 0 0 6px;
 }
 
+.panel-head h1 {
+    margin: 0;
+}
+
 .button-inline {
     display: inline-flex;
     align-items: center;
@@ -1243,6 +1247,11 @@ h2 .cmd-confirm { font-size: 13px; vertical-align: middle; }
     margin-top: 12px;
 }
 
+/* Oberster (gruppenloser) Kachelbereich schließt direkt an die Überschrift an. */
+.widget-grid[data-group=""] {
+    margin-top: 0;
+}
+
 .widget-dropzone.drag-over {
     outline: 2px dashed #3b82f6;
     outline-offset: 3px;
@@ -1344,6 +1353,123 @@ h2 .cmd-confirm { font-size: 13px; vertical-align: middle; }
     font-weight: 700;
     color: #1a1a2e;
     word-break: break-word;
+}
+
+/* Info-Kachel: mehrzeilige Liste, etwas breiter als eine Wert-Kachel, damit die
+   Zeilen (Label + Wert/Balken) lesbar nebeneinander passen. */
+.widget-card--info {
+    grid-column: span 2;
+}
+
+.info-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 4px;
+}
+
+.info-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 13px;
+    line-height: 1.3;
+}
+
+.info-row-key {
+    color: #6b7280;
+    white-space: nowrap;
+}
+
+.info-row-val {
+    color: #1a1a2e;
+    font-weight: 600;
+    text-align: right;
+    word-break: break-word;
+    font-variant-numeric: tabular-nums;
+}
+
+.info-row--bar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+}
+
+.info-row-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.progress {
+    height: 8px;
+    background: #eef2f7;
+    border-radius: 999px;
+    overflow: hidden;
+}
+
+.progress-bar {
+    height: 100%;
+    background: linear-gradient(90deg, #3b82f6, #2563eb);
+    border-radius: 999px;
+    transition: width 0.4s ease;
+}
+
+/* Tabs im Widget-Dialog */
+.dialog-tabs {
+    display: flex;
+    gap: 4px;
+    border-bottom: 1px solid #e2e8f0;
+    margin-bottom: 14px;
+}
+
+.dialog-tab {
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    padding: 8px 14px;
+    font-size: 14px;
+    color: #64748b;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+}
+
+.dialog-tab:hover {
+    color: #334155;
+}
+
+.dialog-tab.is-active {
+    color: #2563eb;
+    font-weight: 600;
+    border-bottom-color: #2563eb;
+}
+
+.tab-panel[hidden] {
+    display: none;
+}
+
+/* Checkliste der Info-Felder */
+.info-check-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 6px 16px;
+    margin-top: 6px;
+}
+
+.info-check {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    color: #334155;
+    cursor: pointer;
+}
+
+.info-check input {
+    width: auto;
+    margin: 0;
 }
 
 .widget-groups {
@@ -2027,4 +2153,213 @@ h2 .cmd-confirm { font-size: 13px; vertical-align: middle; }
     .forecast-hero-soc { text-align: left; }
     .forecast-bar-row { grid-template-columns: 48px minmax(70px, 1fr) 85px; gap: 7px; }
     .forecast-topic-grid { grid-template-columns: 1fr; }
+}
+
+/* ── Adapter / States / State-Picker ───────────────────────────────────── */
+
+/* Topic-Feld mit nebenstehendem State-Auswahl-Button. align-items:stretch lässt
+   den Button auf die Höhe des jeweiligen Eingabefelds wachsen -> einheitlich auf
+   allen Seiten, unabhängig vom seitenspezifischen Input-Padding. */
+.topic-input-row {
+    display: flex;
+    align-items: stretch;
+    gap: 6px;
+}
+.topic-input-row input { flex: 1; min-width: 0; }
+
+/* Höhere Spezifität (.topic-input-row .state-pick-btn) als generische Form-Button-
+   Regeln (.settings-form button u. a.), damit der Picker-Button überall gleich
+   aussieht und nicht das blaue Submit-Button-Styling erbt. */
+.topic-input-row .state-pick-btn {
+    flex: 0 0 auto;
+    align-self: stretch;
+    width: 38px;
+    min-height: 32px;
+    padding: 0;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    background: #f8fafc;
+    color: #2563eb;
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 1;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+.topic-input-row .state-pick-btn:hover {
+    background: #eff6ff;
+    border-color: #2563eb;
+}
+
+/* Adapter-Seite: Instanzliste in einer Adapter-Karte (Detailseiten/Presets) */
+.adapter-instances { display: flex; flex-direction: column; }
+
+/* Adapter-Übersicht: volle Breite, flache spaltige Zeilen */
+.adapter-list { display: flex; flex-direction: column; gap: 16px; }
+.adapter-block {
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    background: #fff;
+    overflow: hidden;
+}
+.adapter-block-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    padding: 10px 14px;
+    background: #f8fafc;
+    border-bottom: 1px solid #e5e7eb;
+}
+.adapter-block-title { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.adapter-prefix {
+    font-family: monospace;
+    font-size: 12px;
+    color: #2563eb;
+    background: #eff6ff;
+    padding: 1px 6px;
+    border-radius: 5px;
+}
+.adapter-add-form { display: flex; gap: 6px; }
+.adapter-add-form input { padding: 5px 8px; }
+
+.adapter-rows { display: flex; flex-direction: column; }
+.adapter-row {
+    display: grid;
+    grid-template-columns: 1.3fr 2fr 0.9fr 1fr auto;
+    align-items: center;
+    gap: 12px;
+    padding: 6px 14px;
+    border-top: 1px solid #f1f5f9;
+    font-size: 13px;
+}
+.adapter-row--head {
+    border-top: none;
+    background: #fcfcfd;
+    color: #6b7280;
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+.adapter-row--empty { grid-template-columns: 1fr; padding: 10px 14px; }
+.adapter-col-addr {
+    font-family: monospace;
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.adapter-row-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
+.adapter-row-actions form { margin: 0; }
+.adapter-row-actions .module-toggle-btn { padding: 4px 9px; font-size: 12px; }
+
+.adapter-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 600;
+}
+.adapter-badge::before {
+    content: '';
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: currentColor;
+}
+.adapter-badge--on { color: #16a34a; }
+.adapter-badge--off { color: #9ca3af; }
+.adapter-badge--warn { color: #d97706; }
+
+@media (max-width: 760px) {
+    .adapter-row, .adapter-row--head {
+        grid-template-columns: 1fr 1fr;
+        row-gap: 4px;
+    }
+    .adapter-row--head { display: none; }
+    .adapter-col-addr { grid-column: 1 / -1; }
+    .adapter-row-actions { grid-column: 1 / -1; justify-content: flex-start; }
+}
+
+/* State-Editor-Tabelle (Adapter-Register-Verwaltung) */
+.states-edit-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+.states-edit-table th,
+.states-edit-table td {
+    text-align: left;
+    padding: 6px 8px;
+    border-top: 1px solid #e5e7eb;
+    vertical-align: top;
+}
+.states-edit-table thead th {
+    border-top: none;
+    color: #6b7280;
+    font-weight: 600;
+}
+
+/* States-Seite: Baum */
+.states-tree { display: flex; flex-direction: column; gap: 14px; }
+.states-inst {
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    background: #fff;
+    overflow: hidden;
+}
+.states-inst-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    background: #f1f5f9;
+    border-bottom: 1px solid #e5e7eb;
+}
+.states-inst-name { font-weight: 700; font-family: monospace; color: #1f2937; }
+
+/* State-Picker: an das Topic-Feld angedockter Dropdown (Popover, Top-Layer) */
+.state-picker-pop {
+    padding: 0;
+    border: 1px solid #cbd5e1;
+    border-radius: 10px;
+    background: #fff;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.28);
+    overflow: hidden;
+    /* Standard-Popover-Inset neutralisieren (Position kommt aus dem JS). */
+    inset: auto;
+}
+.state-picker-pop:popover-open,
+.state-picker-pop.is-open {
+    display: flex;
+    flex-direction: column;
+}
+/* Fallback ohne Popover-API: als fixed-Element mit hohem z-index zeigen. */
+.state-picker-pop.is-open {
+    position: fixed;
+    z-index: 3000;
+}
+.state-picker-search {
+    margin: 8px;
+    padding: 8px 10px;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    flex-shrink: 0;
+}
+.state-picker-body {
+    overflow-y: auto;
+    padding: 0 6px 8px;
+    flex: 1;
+    min-height: 0;
+}
+.state-inst { margin-bottom: 10px; }
+.state-inst-name {
+    font-family: monospace;
+    font-weight: 700;
+    color: #1f2937;
+    padding: 6px 8px;
 }

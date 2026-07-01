@@ -20,9 +20,11 @@ const {
   reorderGroups,
 } = require('../dashboard/groups');
 const { listInternalValues } = require('../output/internal-values');
+const { INFO_FIELDS, readSystemInfo } = require('../dashboard/system-info');
 const renderDashboard = require('../views/dashboard');
 
 function enrichWidget(widget, valuesById) {
+  if (widget.type === 'info') return { ...widget, label: 'System' };
   const entry = valuesById.get(widget.sourceId);
   return {
     ...widget,
@@ -55,6 +57,8 @@ async function renderPage(db, res, options = {}) {
         display: entry.display,
         category: entry.category,
       })),
+      infoFields: INFO_FIELDS,
+      systemInfo: readSystemInfo(),
       formMessage: options.formMessage || '',
       formError: options.formError || '',
       dialogMode: options.dialogMode || '',
@@ -86,10 +90,13 @@ function dashboardRoutes(db) {
       ]);
       const valuesById = new Map(internalValues.map((entry) => [entry.id, entry]));
       res.json({
-        widgets: widgets.map((widget) => {
-          const entry = valuesById.get(widget.sourceId);
-          return { id: widget.id, currentDisplay: entry ? entry.display : '—' };
-        }),
+        widgets: widgets
+          .filter((widget) => widget.type !== 'info')
+          .map((widget) => {
+            const entry = valuesById.get(widget.sourceId);
+            return { id: widget.id, currentDisplay: entry ? entry.display : '—' };
+          }),
+        system: readSystemInfo(),
       });
     } catch (err) {
       next(err);

@@ -146,7 +146,7 @@ function scheduleRun(db) {
   debounceTimer = setTimeout(() => {
     debounceTimer = null;
     runSerialized(db).catch(() => {});
-  }, 1500);
+  }, 1000);
 }
 
 function init(db) {

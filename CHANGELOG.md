@@ -25,6 +25,119 @@
 Alle nennenswerten Änderungen an homeESS. Format angelehnt an
 [Keep a Changelog](https://keepachangelog.com/de/1.1.0/).
 
+## [0.10.1] — 2026-07-01
+
+### Hinzugefügt
+
+- **Info-Kachel fürs Dashboard.** Der Dialog „Widget hinzufuegen" hat jetzt oben
+  **Tabs**: „Wert" (die bisherige Wert-Kachel) und „Info-Kachel". Die Info-Kachel
+  listet System-Informationen untereinander auf — homeESS-Version, Node.js,
+  Plattform, Hostname, CPU/-Kerne, **CPU- und RAM-Auslastung als Fortschrittsbalken**,
+  Prozess-Speicher sowie Betriebs-/System-Laufzeit. Pro Kachel lässt sich per
+  Häkchen wählen, welche Felder erscheinen (standardmäßig alle). Die Werte
+  aktualisieren sich live.
+
+### Geändert
+
+- **Dashboard aufgeräumt:** Der Infotext „Live-Werte als Kacheln…" und der
+  Leerraum darunter entfallen; die Widgets stehen direkt unter der Überschrift.
+- **Reaktionszeit der Bus-Konsumenten verkürzt:** Die Entprellung von Output-Engine
+  und Prognose-Verhalten liegt jetzt bei **1000 ms** (vorher 1500 ms), damit
+  zeitkritische Werte (z. B. Last) im Sekundentakt greifen.
+- **README:** Hardware-Empfehlungen und eine Schritt-für-Schritt-Installation ab
+  frischem Debian (curl/sudo bereitstellen, dann der Setup-Befehl) ergänzt.
+
+### Behoben
+
+- **Hohe CPU-Last bei geöffnetem Dashboard/States.** Beide Seiten luden bei
+  **jedem** MQTT-SSE-Event ungebremst nach (`/dashboard/data` bzw.
+  `/states/data.json`). MQTT-Werte kommen in Bursts (viele Topics gleichzeitig),
+  und `/dashboard/data` ruft das teure `listInternalValues` auf – die offene Seite
+  flutete so den Server (ein Core dauerhaft ausgelastet). Das Nachladen wird jetzt
+  pro Burst zu **einem** Aufruf zusammengefasst (max. 1×/Sekunde), analog zum
+  bereits entprellten Header.
+- **Rückkopplung auf dem internen Broker-Pfad (Vorsorge).** Der Wert-Bus
+  feuerte bei jedem `ingest` ein Änderungs-Event – auch wenn der Wert gleich blieb.
+  Schreibt ein Konsument auf ein Adapter-Topic, echot der Adapter den Wert zurück
+  (`write → Adapter-Echo → ingest → Event → write → …`) und die Schleife läuft mit
+  Event-Loop-Geschwindigkeit (poll-unabhängig, CPU voll ausgelastet). Der Bus
+  emittiert jetzt **nur bei tatsächlicher Wertänderung**; der Cache (inkl.
+  `receivedAt`) wird weiter bei jedem `ingest` aktualisiert, damit die Readback-
+  Verifikation frisch bleibt.
+- **CPU-Auslastung der Info-Kachel korrekt gemessen:** statt Load-Average /
+  Kernzahl (im Container stark überhöht) jetzt die Differenz der CPU-Zeiten aus
+  `/proc/stat` – dieselbe Quelle wie Proxmox. Der Wert wird über ein festes
+  **1-Sekunden-Fenster** gemittelt (Hintergrund-Sampler), statt als verrauschtes
+  Rohdelta zwischen unregelmäßigen Abfragen.
+- **Adapter-Werte kamen bei Konsumenten nicht an.** Trug man ein Adapter-Topic
+  (`prefix://instanz/adresse`) in ein Konfigurationsfeld ein (z. B. Stromverbrauch
+  L1), wurde beim Speichern über `normalizeMqttTopic` das `://` des Schemas zu `:/`
+  kollabiert (Regel „doppelte Slashes zusammenfassen"). Damit galt das Topic nicht
+  mehr als Adapter-Topic und wurde fälschlich über den MQTT-Broker statt über den
+  Adapter-Router geroutet – es kam kein Wert an. `normalizeMqttTopic` ist jetzt
+  schema-fest und gibt Schema-Topics kanonisch (mit intaktem `://`) zurück; normale
+  Broker-Topics werden wie bisher bereinigt. Betrifft alle Speicherpfade
+  (stromverbrauch, batterie, pool, grid-control).
+- **Retained-Delivery beim Abonnieren** im Adapter-Router (`adapters/router.js`):
+  Ein frisch registrierter Abonnent (`registerRoute`) erhält den zuletzt bekannten
+  Wert des kanonischen Topics jetzt sofort aus dem Wert-Bus – wie ein MQTT-Broker
+  eine retained message ausliefert –, ohne auf den nächsten Adapter-Tick oder eine
+  optionale `read()`-Implementierung zu warten.
+
+## [0.10.0] — 2026-06-30
+
+### Hinzugefügt
+
+- **Modbus-TCP-Adapter** (`adapter/modbus`): verbindet homeESS mit Modbus-TCP-
+  Geräten. Pro Instanz wird ein Server konfiguriert (Host/Port/Timeout). Die
+  **Unit-/Slave-ID gehört zum Register** (erste Adressebene
+  `modbus://instanz/<unitId>/<adresse>`), sodass eine Instanz mehrere Units abfragt;
+  die abzufragenden **Register werden als States** angelegt und periodisch
+  gelesen, schreibbare Register nehmen Schreibvorgänge an. Dekodierung gemäß
+  PRESET.md (Datentypen `bool`/`bit`/`int/uint16/32/64`/`float32/64`/`string`,
+  Byte-/Word-Reihenfolge, Skalierung/Offset). Eigener, **abhängigkeitsfreier**
+  Modbus-TCP-Client (reiner Node-Socket, FC 01/02/03/04/05/06/16).
+- **Adapter-Seite** zeigt je Instanz zusätzlich den **Verbindungsstatus**
+  (Aktiv/Inaktiv **und** Verbunden/Getrennt, live aktualisiert über
+  `/adapter/status.json`); Adapter melden ihn per `host.setConnected(...)`. Die
+  Instanzliste nutzt die **volle Seitenbreite** mit flachen, spaltigen Zeilen
+  (Instanz · Adresse · Status · Verbindung · Aktionen) für mehr Übersicht.
+- **Generischer, schema-getriebener State-Editor** im Adapter-Framework: Adapter
+  können im Manifest einen `stateEditor` (Spalten + `presets`-Flag) deklarieren;
+  homeESS rendert daraus eine Verwaltungs-Unterseite (Tabelle + Anlegen/Bearbeiten/
+  Löschen). Kein adapterspezifischer Code im Core nötig.
+- **Presets** als Vorlagen je Adapter (`<adapter>/presets/*.json`): Laden mit
+  Auswahl, welche Einträge als **Live-States** in die Instanz übernommen werden;
+  aktuelle States als Preset speichern; Preset vom PC hochladen. Presets sind von
+  den Live-States getrennt (reine Vorlagen). Format-Regelwerk: `PRESET.md` im
+  Adapterverzeichnis (siehe `adapter/modbus/PRESET.md`).
+
+## [0.9.0] — 2026-06-30
+
+### Hinzugefügt
+
+- **Adapter-Schnittstelle**: homeESS kann nun über austauschbare Adapter mit
+  Geräten verbunden werden, ohne den Quellcode zu ändern. Adapter liegen als
+  Unterverzeichnisse in `/adapter/` (Manifest `adapter.json` + `index.js` mit
+  `createAdapter(host)`), sind portabel und installationsübergreifend kompatibel.
+  Das vollständige Regelwerk steht in **ADAPTER.md**; als lauffähige Vorlage dient
+  der mitgelieferte **Demo-Adapter** (`/adapter/demo`).
+- Neue **Adapter-Seite** (im Menü-Fußbereich über „Module"): gefundene Adapter
+  verwalten, mehrere **benannte Instanzen** je Adapter anlegen, einzeln
+  aktivieren/deaktivieren, umbenennen, löschen und über eine generische, aus dem
+  Manifest erzeugte Einstellungsseite konfigurieren.
+- Jede aktive Adapter-Instanz läuft als **eigener Kindprozess** (Isolation,
+  automatischer Neustart mit Backoff bei Absturz).
+- Der zentrale MQTT-Handler wirkt als **Router**: Topics mit Schema
+  `prefix://instanz/adresse` werden an die zuständige Adapter-Instanz geleitet,
+  Topics ohne Schema laufen unverändert über den MQTT-Broker (abwärtskompatibel).
+- Neue **States-Seite** (im Menü unter „Prognose"): alle von Adaptern gemeldeten
+  States als einklappbarer Baum (Instanz → Kategorie → State) mit Live-Werten.
+- **State-Picker**: hinter **jedem** Topic-Feld der Anwendung öffnet ein Button
+  einen Auswahldialog, der den gewählten Adapter-State (`prefix://instanz/adresse`)
+  direkt übernimmt. Global im Layout eingehängt (dekoriert auch dynamisch
+  hinzugefügte Felder automatisch).
+
 ## [0.8.2] — 2026-06-30
 
 ### Geändert

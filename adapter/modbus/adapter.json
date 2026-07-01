@@ -1,0 +1,50 @@
+{
+  "id": "modbus",
+  "name": "Modbus TCP",
+  "prefix": "modbus",
+  "version": "1.0.0",
+  "description": "Verbindet homeESS mit Modbus-TCP-Geräten. Pro Instanz wird ein Server konfiguriert; die abzufragenden Register werden als States angelegt – manuell oder aus Presets (siehe PRESET.md).",
+  "multiInstance": true,
+  "main": "index.js",
+  "settings": [
+    { "key": "host", "label": "Server-Adresse (IP/Host)", "type": "text", "default": "", "hint": "Modbus-TCP-Gerät." },
+    { "key": "port", "label": "Port", "type": "number", "default": 502 },
+    { "key": "timeoutMs", "label": "Timeout (ms)", "type": "number", "default": 2000 }
+  ],
+  "stateEditor": {
+    "storageKey": "registers",
+    "keyFields": ["unitId", "address"],
+    "nameField": "name",
+    "label": "Register",
+    "presets": true,
+    "columns": [
+      { "key": "unitId", "label": "Unit-ID (Slave)", "type": "number", "default": 1, "hint": "Erste Adressebene: modbus://instanz/<unitId>/<adresse>." },
+      { "key": "address", "label": "State-Adresse", "type": "text", "required": true, "hint": "z. B. batterie/soc" },
+      { "key": "name", "label": "Name", "type": "text", "required": true },
+      { "key": "category", "label": "Kategorie", "type": "text", "default": "Allgemein" },
+      { "key": "unit", "label": "Einheit", "type": "text", "default": "" },
+      { "key": "register", "label": "Register (0-basiert)", "type": "number", "required": true },
+      { "key": "registerType", "label": "Registertyp", "type": "select", "default": "holding", "options": [
+        { "value": "holding", "label": "Holding (R/W)" },
+        { "value": "input", "label": "Input (R)" },
+        { "value": "coil", "label": "Coil (R/W)" },
+        { "value": "discrete", "label": "Discrete Input (R)" }
+      ] },
+      { "key": "dataType", "label": "Datentyp", "type": "select", "default": "uint16", "options": [
+        "uint16", "int16", "uint32", "int32", "uint64", "int64", "float32", "float64", "bool", "bit", "string"
+      ] },
+      { "key": "byteOrder", "label": "Byte-Reihenfolge", "type": "select", "default": "big", "options": [
+        { "value": "big", "label": "Big (Standard)" }, { "value": "little", "label": "Little" }
+      ] },
+      { "key": "wordOrder", "label": "Word-Reihenfolge", "type": "select", "default": "big", "options": [
+        { "value": "big", "label": "Big (Standard)" }, { "value": "little", "label": "Little (Word-Swap)" }
+      ] },
+      { "key": "bit", "label": "Bit (0–15, bei dataType bit)", "type": "number", "default": "" },
+      { "key": "length", "label": "Länge (Register, bei string)", "type": "number", "default": "" },
+      { "key": "scale", "label": "Skalierung", "type": "number", "default": 1 },
+      { "key": "offset", "label": "Offset", "type": "number", "default": 0 },
+      { "key": "writable", "label": "Schreibbar", "type": "checkbox", "default": false },
+      { "key": "pollIntervalMs", "label": "Intervall (ms)", "type": "number", "default": 5000 }
+    ]
+  }
+}

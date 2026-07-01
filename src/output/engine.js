@@ -9,7 +9,7 @@ const { normalizeMqttTopic, isCommandTopic } = require('../mqtt/topics');
 const { listOutputs } = require('./outputs');
 const { listInternalValues } = require('./internal-values');
 
-const DEBOUNCE_MS = 1500;
+const DEBOUNCE_MS = 1000;
 const VERIFY_MS = 30000;
 const RETRY_MS = 10000;
 

@@ -27,10 +27,13 @@ const modulesRoutes = require('./routes/modules');
 const poolRoutes = require('./routes/pool');
 const gridControlRoutes = require('./routes/grid-control');
 const wallboxRoutes = require('./routes/wallbox');
+const adapterRoutes = require('./routes/adapters');
+const statesRoutes = require('./routes/states');
 const { buildWallboxSnapshot, totalWallboxPowerWatt } = require('./wallbox/aggregation');
 const { listWallboxes } = require('./wallbox/boxes');
 const prognosisRoutes = require('./routes/prognosis');
 const { initModules, isEnabled } = require('./modules');
+const adapterHost = require('./adapters/host');
 const gridControlAutomation = require('./grid-control/automation');
 const operatingState = require('./operating-state');
 const operatingLevelHandler = require('./operating-level/handler');
@@ -65,6 +68,8 @@ function createApp() {
   app.use(poolRoutes(db));
   app.use(gridControlRoutes(db));
   app.use(wallboxRoutes(db));
+  app.use(adapterRoutes(db));
+  app.use(statesRoutes(db));
 
   const operatingReady = operatingState.init(db).then(() => {
     operatingState.startMqttSync(db);
@@ -74,8 +79,15 @@ function createApp() {
   // loadAllStateDefinitions läuft, da isEnabled() sonst noch falsch zurückgibt.
   const modulesReady = initModules(db)
     .catch(() => {})
+  // Adapter-Host vor loadAllStateDefinitions hochfahren: Registry/Schemes und der
+  // Router-Host müssen stehen, bevor State-Definitionen (ggf. mit prefix://-Topics)
+  // ihre Routen aufbauen.
+  const adaptersReady = adapterHost.initAdapters(db).catch((err) => {
+    console.error('[adapters] Init fehlgeschlagen:', err && err.message);
+  });
   modulesReady
     .then(() => operatingReady)
+    .then(() => adaptersReady)
     .then(() => loadAllStateDefinitions(db))
     .then((defs) => {
       mqttClient.setStateDefinitions(defs);
